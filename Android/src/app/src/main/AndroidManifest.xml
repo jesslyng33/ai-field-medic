@@ -66,6 +66,20 @@
           recreate the activity when UI mode changes (e.g. setting dark mode).
           Instead, just recompose the view.
          -->
+        <!-- Field Medic test harness — temporary launcher -->
+        <activity
+            android:name="com.google.ai.edge.gallery.TriageTestActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Material.Light"
+            tools:ignore="LockedOrientationActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Original Gallery main activity (no longer launcher) -->
         <activity
             android:name="com.google.ai.edge.gallery.MainActivity"
             android:exported="true"
@@ -74,13 +88,7 @@
             android:windowSoftInputMode="adjustResize"
             android:configChanges="uiMode"
             tools:ignore="DiscouragedApi,LockedOrientationActivity">
-            <!-- This is for putting the app into launcher -->
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-
-            <!-- This is for deep linking -->
+            <!-- Deep linking only -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
 
