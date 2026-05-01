@@ -296,6 +296,9 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening
 
+    private val _sessionReady = MutableStateFlow(false)
+    val sessionReady: StateFlow<Boolean> = _sessionReady
+
     private val _currentMode = MutableStateFlow(TriageMode.ASK)
     val currentMode: StateFlow<TriageMode> = _currentMode
 
@@ -328,6 +331,7 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     // --- Internal ---
+    private val sessionStartMs = System.currentTimeMillis()
     private var engine: Engine? = null
     private var conversation: Conversation? = null
     private var modeRouter: ModeRouter? = null
@@ -794,6 +798,37 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
             _vlmDescription.value = ""
             latestVlmDesc = ""
             Log.i(TAG, "Frame captured (${scaled.width}x${scaled.height}) — queued for Gemma")
+        }
+    }
+
+    // --- End session ---
+
+    fun endSession() {
+        viewModelScope.launch(Dispatchers.Default) {
+            // Stop listening and speaking
+            Handler(Looper.getMainLooper()).post {
+                speechRecognizer?.cancel()
+                _isListening.value = false
+            }
+            ttsManager.stop()
+            turnJob?.cancel()
+
+            // Generate AI summary from conversation log
+            val summary = generateSummary()
+
+            // Build report
+            val report = SessionReport(
+                aiSummary = summary,
+                conversationLog = _conversationLog.value,
+                sessionStartMs = sessionStartMs,
+                sessionEndMs = System.currentTimeMillis(),
+                patientName = AssessmentData.userContext?.name ?: "Unknown",
+                location = AssessmentData.tripLocation,
+                soloTraveler = AssessmentData.soloTraveler,
+                firstAidKit = AssessmentData.firstAidKit,
+            )
+            AssessmentData.sessionReport = report
+            _sessionReady.value = true
         }
     }
 

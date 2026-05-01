@@ -17,10 +17,13 @@ object AssessmentData {
     var soloTraveler: Boolean = true
     var firstAidKit: Set<String> = emptySet()
 
+    var sessionReport: SessionReport? = null
+
     fun clear() {
         audioWavBytes = null
         photoBitmap = null
         notes = ""
+        sessionReport = null
         // userContext, tripLocation, soloTraveler, firstAidKit intentionally preserved
     }
 
