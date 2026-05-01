@@ -80,6 +80,12 @@ class FieldMedicViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         val recorder = audioRecord ?: return
+        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+            Log.e(TAG, "AudioRecord failed to initialize (state=${recorder.state})")
+            recorder.release()
+            audioRecord = null
+            return
+        }
         isRecording = true
         _audioRecorded.value = false
         recorder.startRecording()
@@ -99,7 +105,9 @@ class FieldMedicViewModel(application: Application) : AndroidViewModel(applicati
                 }
             }
 
-            recorder.stop()
+            try { recorder.stop() } catch (e: IllegalStateException) {
+                Log.e(TAG, "AudioRecord.stop() failed", e)
+            }
             recorder.release()
             audioRecord = null
             isRecording = false

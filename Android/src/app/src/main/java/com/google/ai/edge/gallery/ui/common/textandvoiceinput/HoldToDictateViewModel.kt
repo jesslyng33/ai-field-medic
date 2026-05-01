@@ -68,6 +68,12 @@ class HoldToDictateViewModel @Inject constructor(@ApplicationContext private val
       }
   }
 
+  override fun onCleared() {
+    super.onCleared()
+    speechRecognizer.stopListening()
+    speechRecognizer.destroy()
+  }
+
   fun startSpeechRecognition(onDone: (String) -> Unit, onAmplitudeChanged: (Int) -> Unit) {
     onRecognitionDone = onDone
     this.onAmplitudeChanged = onAmplitudeChanged
@@ -109,7 +115,9 @@ class HoldToDictateViewModel @Inject constructor(@ApplicationContext private val
 
   override fun onEndOfSpeech() {}
 
-  override fun onError(error: Int) {}
+  override fun onError(error: Int) {
+    setRecognizing(recognizing = false)
+  }
 
   override fun onResults(results: Bundle?) {
     val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)

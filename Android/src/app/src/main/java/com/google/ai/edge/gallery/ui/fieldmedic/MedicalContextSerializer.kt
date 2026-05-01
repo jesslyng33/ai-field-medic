@@ -162,84 +162,14 @@ fun UserMedicalContext.toContextBlock(): String =
  * might recite back to the user.
  */
 fun UserMedicalContext.toNarrativeBlock(): String = buildString {
-    appendLine("=== ABOUT THIS PATIENT (silent context — do NOT recite) ===")
-    val patientLine = buildString {
-        append("Patient: ")
-        append(if (name.isBlank()) "an adult" else name)
-        ageYears?.let { append(", $it years old") }
-        if (sex.isNotBlank()) append(", $sex")
-        if (bloodType.isNotBlank()) append(", blood type $bloodType")
-        if (weightKg > 0) append(", ${weightKg.toInt()} kg")
-        if (heightCm > 0) append(", ${heightCm.toInt()} cm")
-        if (pregnancyStatus) append(", currently pregnant")
-        if (organDonor) append(", organ donor")
-        append(".")
-    }
-    appendLine(patientLine)
-
     if (allergies.isNotEmpty()) {
-        val parts = allergies.joinToString("; ") { a ->
-            buildString {
-                append(a.allergen)
-                if (a.severity.isNotBlank()) append(" (${a.severity})")
-                if (a.reaction.isNotBlank()) append(" — reaction: ${a.reaction}")
-            }
-        }
-        appendLine("Allergies: $parts.")
-    } else {
-        appendLine("No known allergies.")
+        appendLine("Allergies: ${allergies.joinToString(", ") { it.allergen }}.")
     }
-
-    if (conditions.isNotEmpty()) {
-        appendLine("Existing conditions: ${conditions.joinToString(", ")}.")
-    }
-
     if (medications.isNotEmpty()) {
-        val parts = medications.joinToString("; ") { m ->
-            buildString {
-                append(m.name)
-                if (m.dosage.isNotBlank()) append(" ${m.dosage}")
-                if (m.frequency.isNotBlank()) append(", ${m.frequency}")
-                if (m.purpose.isNotBlank()) append(" (for ${m.purpose})")
-            }
-        }
-        appendLine("Currently taking: $parts.")
+        appendLine("Meds: ${medications.joinToString(", ") { it.name }}.")
     }
-
-    if (implants.isNotEmpty()) {
-        appendLine("Implants/devices: ${implants.joinToString(", ")}.")
-    }
-
-    if (surgeries.isNotEmpty()) {
-        val parts = surgeries.joinToString("; ") { s ->
-            if (s.yearApprox != null) "${s.procedure} (${s.yearApprox})" else s.procedure
-        }
-        appendLine("Past surgeries: $parts.")
-    }
-
-    emergencyContact?.let { ec ->
-        val rel = if (ec.relationship.isNotBlank()) " (${ec.relationship})" else ""
-        appendLine("Emergency contact: ${ec.name}$rel at ${ec.phone}.")
-    }
-
-    healthcare?.let { h ->
-        val bits = mutableListOf<String>()
-        if (h.physician.isNotBlank()) bits.add("physician ${h.physician}")
-        if (h.preferredHospital.isNotBlank()) bits.add("preferred hospital ${h.preferredHospital}")
-        if (h.dnrStatus) bits.add("DNR on file")
-        if (h.advanceDirective) bits.add("advance directive on file")
-        if (bits.isNotEmpty()) appendLine("Healthcare: ${bits.joinToString(", ")}.")
-    }
-
-    val tripBits = mutableListOf<String>()
-    if (tripLocation.isNotBlank()) tripBits.add("location: $tripLocation")
-    tripBits.add(if (soloTraveler) "traveling solo" else "traveling with others")
+    if (tripLocation.isNotBlank()) append("Location: $tripLocation. ")
     if (firstAidKit.isNotEmpty()) {
-        tripBits.add("first-aid kit contains ${firstAidKit.joinToString(", ")}")
-    } else {
-        tripBits.add("no first-aid kit listed")
+        append("Kit: ${firstAidKit.joinToString(", ")}.")
     }
-    appendLine("Trip: ${tripBits.joinToString("; ")}.")
-
-    append("=== END PATIENT CONTEXT ===")
 }

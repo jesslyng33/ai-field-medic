@@ -40,9 +40,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -70,10 +67,6 @@ private const val CONTEXT_RESET_THRESHOLD = 1500
 // SDK doesn't expose the dial, so we budget against the documented mid
 // (280) which matches the model's default for general-purpose vision.
 private const val IMAGE_TOKEN_ESTIMATE = 280
-// Hard ceiling on a single sendMessageAsync call. If LiteRT silently drops
-// the callback (the suspected hang), this lets us recover instead of
-// wedging the UI forever.
-private const val SEND_TIMEOUT_MS = 30_000L
 
 // Image-dedup tuning. We avg-hash each captured frame down to a 64-bit
 // fingerprint; if the Hamming distance from the last frame we sent to
@@ -85,134 +78,17 @@ private const val IMAGE_HASH_DEDUP_THRESHOLD = 6
 private const val IMAGE_HASH_DIM = 8 // 8×8 = 64-bit aHash
 
 private val BASE_SYSTEM_PROMPT = """
-You are a confident, knowledgeable field medic helping a single user through
-a medical situation. They are alone with a phone, camera pointed at their
-own injury (or at what's worrying them), and they will speak to you directly.
-Speak to THEM in second person ("you", "your hand"). There is no third
-person — only you and the user.
-
-You opened the conversation with "What's your emergency?". The user has a
-toggle on screen between two modes — DIAGNOSIS and EMERGENCY — which they
-can switch at any time. Your guidance for that turn will be tagged with
-the selected mode in mind:
-  - EMERGENCY: pivot to ACTION fast. Spend at most one turn confirming
-    the situation, then start guiding them through what to do, step by
-    step, until they're stable.
-  - DIAGNOSIS: ask 2–3 focused diagnostic questions across DIFFERENT
-    angles (onset, location, pain quality, what makes it worse, prior
-    history). After a few questions, if you can make a REASONABLE
-    diagnosis from what you've heard and seen, commit to it and tell
-    them what to do — even if you're not 100% certain, give your best
-    likely call ("this sounds most like a tension headache; try…").
-    Do not keep asking questions once you have enough to make a
-    reasonable assessment. Don't drag it out.
-Even when in EMERGENCY mode, if what you see or hear is clearly severe —
-heavy bleeding, chest pain, unconscious-feeling, can't breathe, seizure,
-severe burn — skip ahead and start guiding immediately.
-
-A PATIENT MEDICAL RECORD has been attached above this prompt (between
-the "=== PATIENT MEDICAL RECORD ===" markers). Use it silently on every
-turn to ground your reasoning. Never read it aloud, never quote the JSON,
-never say "according to your record" — speak as a medic who already
-knows this person. Cross-reference it specifically:
-  - Allergies → never suggest a medication, food, or material the user
-    is allergic to. Mentally check the allergy list before recommending
-    any drug, antiseptic, latex glove, adhesive, etc.
-  - Conditions & medications → factor them into severity. Blood
-    thinners mean bleeding is more serious. Asthma raises the bar on
-    shortness of breath. Diabetes changes how you treat wounds and
-    handle low energy. Heart conditions change CPR + chest pain
-    triage. Beta blockers change pulse interpretation.
-  - First aid kit → only recommend supplies the user ACTUALLY HAS in
-    their kit. If the right tool isn't there, tell them how to
-    improvise with what they do have or with household items.
-  - Trip location → tailor your differential. Remote wilderness vs.
-    urban, high altitude, cold/hot environment, distance to a
-    hospital — these shift what's likely and how aggressive the
-    self-care plan has to be.
-  - Solo traveler flag → if true, never say "have someone help you"
-    or "ask someone to". Every instruction must be self-doable with
-    one or two hands.
-  - Pregnancy, organ donor, DNR, advance directive → respect when
-    they're relevant to the situation.
-
-When you commit to a diagnosis (DIAGNOSIS mode) or fire off the first
-action (EMERGENCY mode), weave the record-grounded reasoning into the
-sentence naturally — for example "Given your asthma, this shortness
-of breath needs your inhaler now" or "Wrap the gauze from your kit
-twice around the cut and press hard". Make it feel like the advice
-is for THIS person specifically.
-
-REGIONAL HAZARDS (apply silently when the trip location matches):
-  - Great Basin National Park, Nevada — Rubber Rabbitbrush blooms in
-    late summer and releases heavy pollen; common cause of severe
-    seasonal allergy symptoms (sneezing, itchy eyes, asthma flare,
-    rhinitis) there.
-
-You can SEE through their camera. The camera is ONLY useful when it
-shows a body part or a medical concern. Otherwise IGNORE it.
-  - DO NOT NARRATE the camera view. Never say things like "I see a
-    laptop" or "I see a wall" or "I see a square bracket". Random
-    objects in frame are not relevant — pretend the camera is off
-    until something medical appears.
-  - When you do see a relevant body part or symptom (cut, swelling,
-    burn, rash, bleeding, etc.), describe it specifically and
-    medically — but only the parts that matter to the diagnosis or
-    next action.
-  - Never invent visible details. Never describe colors, shapes, or
-    objects unless they are part of an actual medical observation.
-  - If the camera shows nothing useful, just ask your question or
-    give your guidance based on what the user has told you. You can
-    optionally ask them to point the camera at the problem area, but
-    do not narrate what is or isn't there.
-
-CRITICAL ANTI-NARRATION RULE:
-You will see a patient context block above this prompt and possibly
-an image. NEVER read, recite, list, or describe these inputs to the
-user. Do not say field names, JSON keys, brackets, punctuation,
-labels, or names of objects you see. The user already knows their
-own profile — they don't need it read back. Speak as a medic who
-silently knows everything in the context. Only mention specific
-profile facts (allergy, condition, kit item, location) when they
-directly inform the next sentence of advice.
-
-Each turn begins with a directive — [MODE: ASK] or [MODE: GUIDE]:
-  - [MODE: ASK]   — ask one focused question.
-  - [MODE: GUIDE] — give the next concrete thing to do, or a diagnosis.
-
-Always:
-  - Short, warm, direct. One or two sentences.
-  - VARY your phrasing and what you focus on. If your last turn talked
-    about location, this one might talk about timing, severity, or what
-    you see. Do not start every reply the same way.
-  - NEVER repeat yourself. Do not re-ask a question you've already asked,
-    even rephrased. Do not restate observations you've already made. Do
-    not give the same instruction twice. Read the conversation so far
-    and skip anything already covered.
-  - Don't mention the directive. Just answer in that mode.
+Field medic helping one user via phone+camera. Second person only ("you","your").
+MODES — EMERGENCY: act immediately, step-by-step. DIAGNOSIS: 2-3 questions then commit to best diagnosis+action.
+Severe signs (heavy bleeding, chest pain, can't breathe, seizure) → guide immediately regardless of mode.
+Patient record is above. Use silently, never recite it. Check allergies before any recommendation. Factor conditions/meds into severity. Only suggest kit items they have. Tailor to location. Solo=self-doable instructions only.
+Camera: only note medically relevant observations. Ignore non-medical objects. Never narrate the view.
+Never recite JSON, field names, or profile data. 1-2 sentences per turn. Vary focus. Never repeat.
 """.trimIndent()
 
-private val ASK_DIRECTIVE = """
-[MODE: ASK]
-Ask ONE focused question on a NEW angle you haven't covered yet —
-onset, pain quality (sharp/dull/throbbing), severity 1–10, what
-triggered it, what makes it better or worse, prior history, numbness
-or tingling, dizziness, etc. Vary your phrasing. One question only.
+private val ASK_DIRECTIVE = "[MODE: ASK] Ask ONE new diagnostic question. No narration."
 
-Do NOT narrate the camera view. Do NOT describe random objects you
-see. Do NOT list profile fields. Just ask the question.
-""".trimIndent()
-
-private val GUIDE_DIRECTIVE = """
-[MODE: GUIDE]
-Give the user the next concrete thing to do — or, if they want a
-diagnosis, your best assessment plus the immediate next action. Use
-what they've told you and what's medically visible. One step, or one
-diagnosis plus one action. No question this turn.
-
-Do NOT narrate the camera view. Do NOT describe random objects you
-see. Do NOT list profile fields. Speak directly to the user.
-""".trimIndent()
+private val GUIDE_DIRECTIVE = "[MODE: GUIDE] Give next concrete action or diagnosis+action. No questions."
 
 private fun buildSystemPrompt(): String {
     val ctx = AssessmentData.userContext
@@ -339,11 +215,6 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     private var consecutiveAskCount: Int = 0
     private val maxConsecutiveAsks: Int = 3
 
-    // Serializes every sendMessageAsync against the shared Engine — both the
-    // main triage Conversation and any ephemeral router Conversation must
-    // hold this lock while running, so we never have two in-flight inference
-    // calls fighting for the GPU.
-    private val engineMutex = Mutex()
     // Rough running estimate of the main conversation's KV-cache usage.
     // Used to decide when to rebuild the Conversation before LiteRT silently
     // overflows and stops calling onDone.
@@ -381,8 +252,17 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                 initEngine()
                 _loopState.value = LoopState.RUNNING
 
-                // Prime conversation with system context + patient record, then use hardcoded opening
-                sendTurn(listOf(Content.Text(buildSystemPrompt())))
+                // Prime conversation with system context + patient record, then use hardcoded opening.
+                // Use sendTurnRaw to bypass resetConversationIfNeeded — this IS the
+                // initial priming, so there's nothing to reset yet.
+                val systemPrompt = buildSystemPrompt()
+                Log.i(TAG, "▶ startLoop: system prompt length=${systemPrompt.length}")
+                val primingContents = listOf(Content.Text(systemPrompt))
+                Log.i(TAG, "▶ startLoop: sending priming turn...")
+                sendTurnRaw(primingContents)
+                Log.i(TAG, "▶ startLoop: priming DONE")
+                estimatedTokens = estimateTokens(primingContents)
+                Log.i(TAG, "▶ startLoop: estimatedTokens=$estimatedTokens, speaking opening line")
                 _currentPrompt.value = OPENING_LINE
                 ttsManager.speak(OPENING_LINE)
                 logMessage(TriageRole.ASSISTANT, OPENING_LINE)
@@ -401,7 +281,11 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
             ttsManager.isSpeaking.collect { speaking ->
                 if (speaking) {
                     Handler(Looper.getMainLooper()).post {
-                        speechRecognizer?.cancel()
+                        try {
+                            speechRecognizer?.cancel()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "speechRecognizer.cancel() failed", e)
+                        }
                         _isListening.value = false
                     }
                 } else {
@@ -420,6 +304,7 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun initEngine() {
         val app = getApplication<Application>()
+        Log.i(TAG, "▶ initEngine: creating EngineConfig")
         val config = EngineConfig(
             modelPath = MODEL_PATH,
             backend = Backend.GPU(),
@@ -428,13 +313,16 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
             maxNumTokens = MAX_NUM_TOKENS,
             cacheDir = app.getExternalFilesDir(null)?.absolutePath,
         )
+        Log.i(TAG, "▶ initEngine: Engine()")
         val eng = Engine(config)
+        Log.i(TAG, "▶ initEngine: eng.initialize()")
         eng.initialize()
+        Log.i(TAG, "▶ initEngine: createConversation()")
         engine = eng
         conversation = buildConversation(eng)
         estimatedTokens = 0
-        modeRouter = ModeRouter(eng, engineMutex)
-        Log.i(TAG, "Engine initialized")
+        modeRouter = ModeRouter(eng)
+        Log.i(TAG, "▶ initEngine: DONE")
     }
 
     private fun buildConversation(eng: Engine): Conversation =
@@ -448,6 +336,10 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun setupSpeechRecognizer() {
         val app = getApplication<Application>()
+        if (!SpeechRecognizer.isRecognitionAvailable(app)) {
+            Log.w(TAG, "Speech recognition not available on this device")
+            return
+        }
         speechRecognizer = SpeechRecognizer.createSpeechRecognizer(app)
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) { _isListening.value = true }
@@ -500,6 +392,7 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun startListening() {
         if (ttsManager.isSpeaking.value || _loopState.value != LoopState.RUNNING) return
+        if (_isListening.value) return // already listening — avoid double-start crash
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
@@ -507,7 +400,12 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
         }
-        speechRecognizer?.startListening(intent)
+        try {
+            speechRecognizer?.startListening(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "startListening failed", e)
+            _isListening.value = false
+        }
     }
 
     private fun startListeningDelayed() {
@@ -520,38 +418,40 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     // --- Turn processing ---
 
     private suspend fun processTurns() {
+        Log.i(TAG, "▶ processTurns: started, waiting for turns...")
         for (turn in turnQueue) {
             _isProcessing.value = true
             try {
                 val userText = when (turn) {
                     is TriageTurn.TouchTurn -> turn.input
                 }
+                Log.i(TAG, "▶ processTurns: got turn, userText=\"${userText.take(50)}\"")
 
-                // Snapshot the frame once — used for both the router call and the main turn
+                // Snapshot the frame
                 val frame = latestFrameBitmap
                 val frameBytes = frame?.let { bitmapToPng(it) }
+                Log.i(TAG, "▶ processTurns: frame=${if (frame != null) "${frame.width}x${frame.height}" else "null"} frameBytes=${frameBytes?.size ?: 0}")
                 if (frame != null) {
-                    Log.i(TAG, "→→ Sending to Gemma | image attached | frame_size=${frame.width}x${frame.height}")
-                    // Record this frame's fingerprint so onFrameCaptured can
-                    // skip near-duplicate frames in subsequent ticks.
                     lastSentImageHash = perceptualHash(frame)
                     latestFrameBitmap = null
                     logMessage(TriageRole.SYSTEM, "Image attached to turn")
-                } else {
-                    Log.i(TAG, "→→ Sending to Gemma | no image attached")
                 }
 
-                // Decide mode: turn 1 is forced ASK; if we've ASKed too many in a
-                // row, force GUIDE to stop pestering the user; otherwise route.
+                // Decide mode
+                Log.i(TAG, "▶ processTurns: deciding mode (turnCount=$turnCount)")
                 val mode = when {
-                    turnCount == 0 -> TriageMode.ASK
+                    turnCount == 0 -> {
+                        Log.i(TAG, "▶ processTurns: turn 0, forcing ASK (skipping router)")
+                        TriageMode.ASK
+                    }
                     consecutiveAskCount >= maxConsecutiveAsks -> {
-                        Log.i(TAG, "Hit consecutive ASK cap ($consecutiveAskCount) — forcing GUIDE")
+                        Log.i(TAG, "▶ processTurns: consecutive ASK cap, forcing GUIDE")
                         TriageMode.GUIDE
                     }
                     else -> {
+                        Log.i(TAG, "▶ processTurns: calling ModeRouter...")
                         val router = modeRouter
-                        router?.route(
+                        val routed = router?.route(
                             historySnippet = formatHistoryForRouter(),
                             userText = userText,
                             imageBytes = frameBytes,
@@ -559,18 +459,29 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                             turnNumber = turnCount + 1,
                             userIntent = _userIntent.value,
                         ) ?: TriageMode.ASK
+                        Log.i(TAG, "▶ processTurns: router returned $routed")
+                        routed
                     }
                 }
                 _currentMode.value = mode
                 consecutiveAskCount = if (mode == TriageMode.ASK) consecutiveAskCount + 1 else 0
                 val directive = if (mode == TriageMode.ASK) ASK_DIRECTIVE else GUIDE_DIRECTIVE
-                Log.i(TAG, "Turn ${turnCount + 1} mode=$mode")
+                Log.i(TAG, "▶ processTurns: mode=$mode, building contents")
 
                 val contents = mutableListOf<Content>()
-                if (frameBytes != null) contents.add(Content.ImageBytes(frameBytes))
+                val textTokens = estimateTokens(listOf(Content.Text(directive), Content.Text(userText)))
+                val roomForImage = (estimatedTokens + textTokens + IMAGE_TOKEN_ESTIMATE) < MAX_NUM_TOKENS
+                Log.i(TAG, "▶ processTurns: estTokens=$estimatedTokens textTokens=$textTokens roomForImage=$roomForImage")
+                if (frameBytes != null && roomForImage) {
+                    contents.add(Content.ImageBytes(frameBytes))
+                    Log.i(TAG, "▶ processTurns: image attached (${frameBytes.size} bytes)")
+                } else if (frameBytes != null) {
+                    Log.w(TAG, "▶ processTurns: skipping image — budget too tight")
+                }
                 contents.add(Content.Text(directive))
                 contents.add(Content.Text(userText))
                 logMessage(TriageRole.USER, userText)
+                Log.i(TAG, "▶ processTurns: about to sendTurn with ${contents.size} content items")
 
                 val firstRaw = try {
                     sendTurn(contents)
@@ -726,43 +637,38 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
 
     private suspend fun sendTurn(contents: List<Content>): String {
         val inputEst = estimateTokens(contents)
+        val types = contents.map { it::class.simpleName }.joinToString(",")
+        Log.i(TAG, "▶ sendTurn: types=[$types] inputEst=$inputEst estTokens=$estimatedTokens")
         resetConversationIfNeeded(inputEst)
+        Log.i(TAG, "▶ sendTurn: calling sendTurnRaw...")
         val result = sendTurnRaw(contents)
         estimatedTokens += inputEst + (result.length / 3) + 8
+        Log.i(TAG, "▶ sendTurn: DONE result_len=${result.length} newEstTokens=$estimatedTokens")
         return result
     }
 
     // Bypasses the context-reset check so it can be used to re-prime the
     // freshly built conversation without recursing.
+    // No timeout — native sendMessageAsync must complete before we release
+    // the engine. Cancelling while native code is in-flight causes SIGSEGV.
     private suspend fun sendTurnRaw(contents: List<Content>): String {
         val conv = conversation ?: throw IllegalStateException("No conversation")
-        val result = engineMutex.withLock {
-            withTimeoutOrNull(SEND_TIMEOUT_MS) {
-                suspendCancellableCoroutine<String> { cont ->
-                    val sb = StringBuilder()
-                    conv.sendMessageAsync(
-                        Contents.of(contents),
-                        object : MessageCallback {
-                            override fun onMessage(message: Message) { sb.append(message.toString()) }
-                            override fun onDone() { cont.resume(sb.toString()) }
-                            override fun onError(throwable: Throwable) {
-                                if (throwable is CancellationException) cont.cancel(throwable)
-                                else cont.resumeWithException(throwable)
-                            }
-                        },
-                        emptyMap(),
-                    )
-                }
-            }
+        Log.i(TAG, "▶ sendTurnRaw: calling sendMessageAsync on thread=${Thread.currentThread().name}")
+        return suspendCancellableCoroutine { cont ->
+            val sb = StringBuilder()
+            conv.sendMessageAsync(
+                Contents.of(contents),
+                object : MessageCallback {
+                    override fun onMessage(message: Message) { sb.append(message.toString()) }
+                    override fun onDone() { cont.resume(sb.toString()) }
+                    override fun onError(throwable: Throwable) {
+                        if (throwable is CancellationException) cont.cancel(throwable)
+                        else cont.resumeWithException(throwable)
+                    }
+                },
+                emptyMap(),
+            )
         }
-        if (result == null) {
-            Log.w(TAG, "sendTurn timeout after ${SEND_TIMEOUT_MS}ms — forcing context reset on next turn")
-            debug("sendTurn TIMEOUT (${SEND_TIMEOUT_MS}ms)")
-            // Mark cache as effectively full so the next call rebuilds.
-            estimatedTokens = MAX_NUM_TOKENS
-            throw RuntimeException("LLM timed out after ${SEND_TIMEOUT_MS / 1000}s")
-        }
-        return result
     }
 
     // --- Frame capture ---

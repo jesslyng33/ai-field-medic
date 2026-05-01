@@ -11,8 +11,6 @@ import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.SamplerConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -76,7 +74,6 @@ Output exactly one word, no punctuation, no explanation: ASK or GUIDE.
  */
 class ModeRouter(
     private val engine: Engine,
-    private val engineMutex: Mutex,
 ) {
 
     suspend fun route(
@@ -86,11 +83,12 @@ class ModeRouter(
         previousMode: TriageMode?,
         turnNumber: Int,
         userIntent: TriageIntent,
-    ): TriageMode = engineMutex.withLock {
+    ): TriageMode {
         // imageBytes is accepted for API compatibility but intentionally unused.
         @Suppress("UNUSED_VARIABLE") val ignoredImage = imageBytes
         val started = System.currentTimeMillis()
-        try {
+        Log.i(TAG, "▶ Router: createConversation + sendMessage...")
+        return try {
             val conv = engine.createConversation(
                 ConversationConfig(
                     samplerConfig = SamplerConfig(topK = 1, topP = 1.0, temperature = 0.0),
