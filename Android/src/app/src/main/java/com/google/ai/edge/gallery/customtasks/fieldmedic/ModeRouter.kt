@@ -65,10 +65,19 @@ Output exactly one word, no punctuation, no explanation: ASK or GUIDE.
  * Routes each turn of the live triage loop to either ASK or GUIDE mode using
  * a separate ephemeral [Conversation] on the shared Gemma [Engine]. The main
  * triage conversation never sees router prompts or outputs.
+ *
+ * Routing is intentionally text-only: attaching the camera frame here would
+ * burn ~256+ image tokens per turn and force the vision backend to run
+ * twice (router + main turn), which contributed to the post-few-turns hang.
+ * The main conversation still gets the image.
+ *
+ * The [engineMutex] is shared with [TriageLoopViewModel] so that no two
+ * sendMessageAsync calls run concurrently on the same Engine.
  */
-class ModeRouter(private val engine: Engine) {
-
-    private val mutex = Mutex()
+class ModeRouter(
+    private val engine: Engine,
+    private val engineMutex: Mutex,
+) {
 
     suspend fun route(
         historySnippet: String,
@@ -77,7 +86,9 @@ class ModeRouter(private val engine: Engine) {
         previousMode: TriageMode?,
         turnNumber: Int,
         userIntent: TriageIntent,
-    ): TriageMode = mutex.withLock {
+    ): TriageMode = engineMutex.withLock {
+        // imageBytes is accepted for API compatibility but intentionally unused.
+        @Suppress("UNUSED_VARIABLE") val ignoredImage = imageBytes
         val started = System.currentTimeMillis()
         try {
             val conv = engine.createConversation(
@@ -87,7 +98,6 @@ class ModeRouter(private val engine: Engine) {
             )
             try {
                 val contents = mutableListOf<Content>()
-                if (imageBytes != null) contents.add(Content.ImageBytes(imageBytes))
                 contents.add(
                     Content.Text(
                         ROUTER_PROMPT_TEMPLATE.format(

@@ -40,6 +40,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -49,6 +52,37 @@ private const val MODEL_PATH = "/data/local/tmp/gemma-4-E2B-it.litertlm"
 private const val FRAME_INTERVAL_MS = 5000L
 private const val OPENING_LINE = "What's your emergency?"
 private const val MIN_USEFUL_RESPONSE_CHARS = 10
+
+// Engine context budget. Must match EngineConfig.maxNumTokens below.
+// Gemma 4 E2B's model-side context window is 128K, but the real ceiling
+// is GPU KV-cache memory on this device — bumping above 2048 made
+// Engine.initialize() crash on the Galaxy at startup, so we hold here.
+// The conversation-reset path below absorbs the smaller budget by
+// rebuilding the session before it overflows.
+private const val MAX_NUM_TOKENS = 2048
+// When estimated KV-cache usage crosses this, rebuild the Conversation
+// before the next turn rather than risk a silent overflow hang. Held at
+// ~73% of the budget to leave room for one more full turn worth of
+// directive + user input + response before the actual ceiling.
+private const val CONTEXT_RESET_THRESHOLD = 1500
+// Rough multimodal image cost in tokens. Gemma 4's image tokenizer has
+// configurable budgets of 70 / 140 / 280 / 560 / 1120; the LiteRT Android
+// SDK doesn't expose the dial, so we budget against the documented mid
+// (280) which matches the model's default for general-purpose vision.
+private const val IMAGE_TOKEN_ESTIMATE = 280
+// Hard ceiling on a single sendMessageAsync call. If LiteRT silently drops
+// the callback (the suspected hang), this lets us recover instead of
+// wedging the UI forever.
+private const val SEND_TIMEOUT_MS = 30_000L
+
+// Image-dedup tuning. We avg-hash each captured frame down to a 64-bit
+// fingerprint; if the Hamming distance from the last frame we sent to
+// Gemma is below the threshold, we skip re-attaching the image and let
+// that turn run text-only. Camera shake on a static scene tends to land
+// under 4 bits of difference; real medical changes (bleeding spread,
+// swelling progression) tend to land above 8.
+private const val IMAGE_HASH_DEDUP_THRESHOLD = 6
+private const val IMAGE_HASH_DIM = 8 // 8×8 = 64-bit aHash
 
 private val BASE_SYSTEM_PROMPT = """
 You are a confident, knowledgeable field medic helping a single user through
@@ -300,10 +334,25 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     private var turnCount: Int = 0
     private var consecutiveAskCount: Int = 0
     private val maxConsecutiveAsks: Int = 3
+
+    // Serializes every sendMessageAsync against the shared Engine — both the
+    // main triage Conversation and any ephemeral router Conversation must
+    // hold this lock while running, so we never have two in-flight inference
+    // calls fighting for the GPU.
+    private val engineMutex = Mutex()
+    // Rough running estimate of the main conversation's KV-cache usage.
+    // Used to decide when to rebuild the Conversation before LiteRT silently
+    // overflows and stops calling onDone.
+    @Volatile private var estimatedTokens: Int = 0
     val ttsManager = TtsManager(application)
 
     @Volatile private var latestFrameBitmap: Bitmap? = null
     @Volatile private var latestVlmDesc: String = ""
+    // 64-bit aHash of the last frame we sent to Gemma. Used by
+    // onFrameCaptured to skip frames that are visually ~identical so we
+    // don't pay the image-token tax on every turn while the camera sits
+    // on the same wound.
+    @Volatile private var lastSentImageHash: Long? = null
 
     // Gate stubbed — all frames pass through. Real impls (MlKitFaceFrameGate,
     // EfficientDetFrameGate) are still in FrameGate.kt for later use.
@@ -372,21 +421,24 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
             backend = Backend.GPU(),
             visionBackend = Backend.GPU(),
             audioBackend = Backend.CPU(),
-            maxNumTokens = 2048,
+            maxNumTokens = MAX_NUM_TOKENS,
             cacheDir = app.getExternalFilesDir(null)?.absolutePath,
         )
         val eng = Engine(config)
         eng.initialize()
-        val conv = eng.createConversation(
+        engine = eng
+        conversation = buildConversation(eng)
+        estimatedTokens = 0
+        modeRouter = ModeRouter(eng, engineMutex)
+        Log.i(TAG, "Engine initialized")
+    }
+
+    private fun buildConversation(eng: Engine): Conversation =
+        eng.createConversation(
             ConversationConfig(
                 samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.7),
             )
         )
-        engine = eng
-        conversation = conv
-        modeRouter = ModeRouter(eng)
-        Log.i(TAG, "Engine initialized")
-    }
 
     // --- Speech recognition ---
 
@@ -476,6 +528,9 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                 val frameBytes = frame?.let { bitmapToPng(it) }
                 if (frame != null) {
                     Log.i(TAG, "→→ Sending to Gemma | image attached | frame_size=${frame.width}x${frame.height}")
+                    // Record this frame's fingerprint so onFrameCaptured can
+                    // skip near-duplicate frames in subsequent ticks.
+                    lastSentImageHash = perceptualHash(frame)
                     latestFrameBitmap = null
                     logMessage(TriageRole.SYSTEM, "Image attached to turn")
                 } else {
@@ -600,23 +655,110 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    private suspend fun sendTurn(contents: List<Content>): String {
-        val conv = conversation ?: throw IllegalStateException("No conversation")
-        return suspendCancellableCoroutine { cont ->
-            val sb = StringBuilder()
-            conv.sendMessageAsync(
-                Contents.of(contents),
-                object : MessageCallback {
-                    override fun onMessage(message: Message) { sb.append(message.toString()) }
-                    override fun onDone() { cont.resume(sb.toString()) }
-                    override fun onError(throwable: Throwable) {
-                        if (throwable is CancellationException) cont.cancel(throwable)
-                        else cont.resumeWithException(throwable)
-                    }
-                },
-                emptyMap(),
+    private fun estimateTokens(contents: List<Content>): Int {
+        var total = 0
+        for (c in contents) {
+            when (c) {
+                is Content.Text -> total += (c.text.length / 3) + 8
+                is Content.ImageBytes -> total += IMAGE_TOKEN_ESTIMATE
+                else -> total += 8
+            }
+        }
+        return total
+    }
+
+    // If we're about to blow past the context budget, close the current
+    // Conversation and start a fresh one re-primed with the system prompt
+    // and a short recap of the last few turns. This is the actual fix for
+    // "model hangs after a few turns" — Gemma's KV cache cannot grow forever
+    // and LiteRT does not always surface overflow as an exception.
+    private suspend fun resetConversationIfNeeded(nextTurnEstimate: Int) {
+        if (estimatedTokens + nextTurnEstimate < CONTEXT_RESET_THRESHOLD) return
+        val eng = engine ?: return
+        Log.w(
+            TAG,
+            "[CtxReset] tokens≈$estimatedTokens + $nextTurnEstimate ≥ " +
+                "$CONTEXT_RESET_THRESHOLD — rebuilding conversation",
+        )
+        debug("Resetting conversation (tokens≈$estimatedTokens)")
+        try { conversation?.close() } catch (_: Exception) {}
+        conversation = buildConversation(eng)
+        estimatedTokens = 0
+        // Fresh KV cache has no visual context either — clear the dedup hash
+        // so the next captured frame goes through and re-grounds the model.
+        lastSentImageHash = null
+
+        val systemPrompt = buildSystemPrompt()
+        val recap = formatRecapForResume()
+        val priming = mutableListOf<Content>(Content.Text(systemPrompt))
+        if (recap.isNotBlank()) {
+            priming.add(
+                Content.Text("Recent conversation so far (most recent last):\n$recap"),
             )
         }
+        val primingTokens = estimateTokens(priming)
+        try {
+            sendTurnRaw(priming)
+            estimatedTokens = primingTokens
+            debug("Re-primed after reset (tokens≈$primingTokens)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Re-priming after reset failed", e)
+        }
+    }
+
+    private fun formatRecapForResume(maxTurns: Int = 4): String {
+        val log = _conversationLog.value
+            .filter { it.role != TriageRole.SYSTEM }
+            .takeLast(maxTurns * 2)
+        if (log.isEmpty()) return ""
+        return log.joinToString("\n") { msg ->
+            when (msg.role) {
+                TriageRole.USER -> "PATIENT: ${msg.content}"
+                TriageRole.ASSISTANT -> "MEDIC: ${msg.content}"
+                TriageRole.SYSTEM -> ""
+            }
+        }
+    }
+
+    private suspend fun sendTurn(contents: List<Content>): String {
+        val inputEst = estimateTokens(contents)
+        resetConversationIfNeeded(inputEst)
+        val result = sendTurnRaw(contents)
+        estimatedTokens += inputEst + (result.length / 3) + 8
+        return result
+    }
+
+    // Bypasses the context-reset check so it can be used to re-prime the
+    // freshly built conversation without recursing.
+    private suspend fun sendTurnRaw(contents: List<Content>): String {
+        val conv = conversation ?: throw IllegalStateException("No conversation")
+        val result = engineMutex.withLock {
+            withTimeoutOrNull(SEND_TIMEOUT_MS) {
+                suspendCancellableCoroutine<String> { cont ->
+                    val sb = StringBuilder()
+                    conv.sendMessageAsync(
+                        Contents.of(contents),
+                        object : MessageCallback {
+                            override fun onMessage(message: Message) { sb.append(message.toString()) }
+                            override fun onDone() { cont.resume(sb.toString()) }
+                            override fun onError(throwable: Throwable) {
+                                if (throwable is CancellationException) cont.cancel(throwable)
+                                else cont.resumeWithException(throwable)
+                            }
+                        },
+                        emptyMap(),
+                    )
+                }
+            }
+        }
+        if (result == null) {
+            Log.w(TAG, "sendTurn timeout after ${SEND_TIMEOUT_MS}ms — forcing context reset on next turn")
+            debug("sendTurn TIMEOUT (${SEND_TIMEOUT_MS}ms)")
+            // Mark cache as effectively full so the next call rebuilds.
+            estimatedTokens = MAX_NUM_TOKENS
+            throw RuntimeException("LLM timed out after ${SEND_TIMEOUT_MS / 1000}s")
+        }
+        return result
     }
 
     // --- Frame capture ---
@@ -627,14 +769,69 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
             val result = frameGate.analyze(scaled)
             _frameGateStatus.value = result.passed
             _latestDetections.value = result.detections
-            // Stub gate always passes — store the frame for the next Gemma turn.
-            // No describer call: Gemma sees the image directly.
+
+            // Image-token dedup: if this frame is visually almost identical to
+            // the last one we actually sent to Gemma, don't queue it. The
+            // previous image is still in the KV cache and the model doesn't
+            // need a redundant copy. Only computed when there's a frame to
+            // compare against; the first frame after a reset always passes.
+            val hash = perceptualHash(scaled)
+            val previous = lastSentImageHash
+            val skip = previous != null &&
+                hammingDistance(hash, previous) <= IMAGE_HASH_DEDUP_THRESHOLD
+            if (skip) {
+                Log.i(
+                    TAG,
+                    "Frame captured (${scaled.width}x${scaled.height}) — skipped " +
+                        "(visually unchanged, hamming<=$IMAGE_HASH_DEDUP_THRESHOLD)",
+                )
+                _vlmDescription.value = ""
+                latestVlmDesc = ""
+                return@launch
+            }
+
             latestFrameBitmap = scaled
             _vlmDescription.value = ""
             latestVlmDesc = ""
             Log.i(TAG, "Frame captured (${scaled.width}x${scaled.height}) — queued for Gemma")
         }
     }
+
+    /**
+     * 64-bit average-hash of a bitmap. Downsamples to IMAGE_HASH_DIM × IMAGE_HASH_DIM
+     * grayscale, computes mean, returns a bit per pixel (1 if above mean). Cheap
+     * (~few ms) and stable to lighting/scale changes — but sensitive enough that
+     * a real medical change in frame (bleeding spread, swelling) shifts enough
+     * pixels to clear the dedup threshold.
+     */
+    private fun perceptualHash(bitmap: Bitmap): Long {
+        val side = IMAGE_HASH_DIM
+        val small = Bitmap.createScaledBitmap(bitmap, side, side, true)
+        val pixels = IntArray(side * side)
+        small.getPixels(pixels, 0, side, 0, 0, side, side)
+        val grays = IntArray(side * side)
+        var sum = 0
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            // Rec. 601 luma — fine for our dedup needs and integer-fast.
+            val gray = (r * 299 + g * 587 + b * 114) / 1000
+            grays[i] = gray
+            sum += gray
+        }
+        if (small !== bitmap) small.recycle()
+        val mean = sum / grays.size
+        var hash = 0L
+        for (i in grays.indices) {
+            if (grays[i] >= mean) hash = hash or (1L shl i)
+        }
+        return hash
+    }
+
+    private fun hammingDistance(a: Long, b: Long): Int =
+        java.lang.Long.bitCount(a xor b)
 
     // --- Summary ---
 
