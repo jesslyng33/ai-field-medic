@@ -93,9 +93,9 @@ fun VitalsEditScreen(
     var temperature by remember { mutableStateOf("") }
 
     // Imperial helpers
-    val displayWeightLbs: Float get() = weightKg * 2.20462f
-    val displayHeightFt: Int get() = (heightCm / 30.48f).toInt()
-    val displayHeightIn: Int get() = ((heightCm / 2.54f).toInt() % 12)
+    val displayWeightLbs: Float = weightKg * 2.20462f
+    val displayHeightFt: Int = (heightCm / 30.48f).toInt()
+    val displayHeightIn: Int = ((heightCm / 2.54f).toInt() % 12)
 
     Column(
         modifier = Modifier

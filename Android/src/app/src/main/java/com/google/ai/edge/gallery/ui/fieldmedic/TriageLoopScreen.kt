@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -76,6 +77,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.ai.edge.gallery.customtasks.fieldmedic.DetectionBox
+import com.google.ai.edge.gallery.customtasks.fieldmedic.TriageIntent
 import com.google.ai.edge.gallery.ui.theme.appFontFamily
 import kotlinx.coroutines.delay
 import java.util.concurrent.Executors
@@ -86,6 +88,7 @@ private const val TAG = "TriageLoopScreen"
 fun TriageLoopScreen(
     viewModel: TriageLoopViewModel,
     onExit: () -> Unit,
+    onEndSession: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -104,6 +107,7 @@ fun TriageLoopScreen(
     val frameGateStatus by viewModel.frameGateStatus.collectAsState()
     val detections by viewModel.latestDetections.collectAsState()
     val cameraFacing by viewModel.cameraFacing.collectAsState()
+    val userIntent by viewModel.userIntent.collectAsState()
 
     val activity = when {
         isSpeaking -> LoopActivity.SPEAKING
@@ -260,6 +264,7 @@ fun TriageLoopScreen(
                 onFlashToggle = { viewModel.toggleFlash() },
                 onFlipCamera = { viewModel.toggleCameraFacing() },
                 onSos = onExit,
+                onEndSession = onEndSession,
             )
 
             // Activity status pill (LISTENING / SPEAKING / PROCESSING)
@@ -327,7 +332,8 @@ fun TriageLoopScreen(
 
             Spacer(Modifier.height(16.dp))
 
-            // YES / NO buttons
+            // DIAGNOSIS / EMERGENCY mode toggle — switches the routing bias.
+            // Selected button is bright; the other is dimmed.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -335,20 +341,23 @@ fun TriageLoopScreen(
                     .padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                val diagSelected = userIntent == TriageIntent.DIAGNOSIS
+                val emergSelected = userIntent == TriageIntent.EMERGENCY
+
                 androidx.compose.material3.FilledIconButton(
-                    onClick = { viewModel.onYesPressed() },
+                    onClick = { viewModel.setUserIntent(TriageIntent.DIAGNOSIS) },
                     modifier = Modifier
                         .weight(1f)
                         .height(52.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = FMGreen,
+                        containerColor = if (diagSelected) FMGreen else FMGreen.copy(alpha = 0.3f),
                         contentColor = FMText,
                     ),
                 ) {
                     Text(
-                        "YES",
-                        fontSize = 16.sp,
+                        "DIAGNOSIS",
+                        fontSize = 14.sp,
                         fontWeight = FontWeight.Black,
                         fontFamily = appFontFamily,
                         letterSpacing = 2.sp,
@@ -356,19 +365,19 @@ fun TriageLoopScreen(
                 }
 
                 androidx.compose.material3.FilledIconButton(
-                    onClick = { viewModel.onNoPressed() },
+                    onClick = { viewModel.setUserIntent(TriageIntent.EMERGENCY) },
                     modifier = Modifier
                         .weight(1f)
                         .height(52.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = FMRed,
+                        containerColor = if (emergSelected) FMRed else FMRed.copy(alpha = 0.3f),
                         contentColor = FMText,
                     ),
                 ) {
                     Text(
-                        "NO",
-                        fontSize = 16.sp,
+                        "EMERGENCY",
+                        fontSize = 14.sp,
                         fontWeight = FontWeight.Black,
                         fontFamily = appFontFamily,
                         letterSpacing = 2.sp,
@@ -555,6 +564,7 @@ private fun TopBar(
     onFlashToggle: () -> Unit,
     onFlipCamera: () -> Unit,
     onSos: () -> Unit,
+    onEndSession: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -574,6 +584,28 @@ private fun TopBar(
                 Icons.Filled.Add,
                 contentDescription = "SOS",
                 modifier = Modifier.size(28.dp),
+            )
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        androidx.compose.material3.FilledIconButton(
+            onClick = onEndSession,
+            shape = RoundedCornerShape(14.dp),
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = Color.Black.copy(alpha = 0.55f),
+                contentColor = FMText,
+            ),
+            modifier = Modifier
+                .height(44.dp)
+                .widthIn(min = 88.dp),
+        ) {
+            Text(
+                "END",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Black,
+                fontFamily = appFontFamily,
+                letterSpacing = 2.sp,
             )
         }
 

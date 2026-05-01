@@ -16,7 +16,10 @@ import com.google.ai.edge.gallery.customtasks.fieldmedic.DetectionBox
 import com.google.ai.edge.gallery.customtasks.fieldmedic.FrameGate
 import com.google.ai.edge.gallery.customtasks.fieldmedic.MlKitFaceFrameGate
 import com.google.ai.edge.gallery.customtasks.fieldmedic.FastVlmWoundDescriber
+import com.google.ai.edge.gallery.customtasks.fieldmedic.ModeRouter
 import com.google.ai.edge.gallery.customtasks.fieldmedic.StubWoundDescriber
+import com.google.ai.edge.gallery.customtasks.fieldmedic.TriageIntent
+import com.google.ai.edge.gallery.customtasks.fieldmedic.TriageMode
 import com.google.ai.edge.gallery.customtasks.fieldmedic.WoundDescriber
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
@@ -46,23 +49,98 @@ private const val MODEL_PATH = "/data/local/tmp/gemma-4-E2B-it.litertlm"
 private const val FRAME_INTERVAL_MS = 5000L
 private const val OPENING_LINE = "What's your emergency?"
 
-private val SYSTEM_PROMPT_BASE = """
-You are an emergency field medic dispatcher guiding a person through treating an injury in a remote location with no medical help available.
+private val BASE_SYSTEM_PROMPT = """
+You are a confident, knowledgeable field medic helping a single user through
+a medical situation. They are alone with a phone, camera pointed at their
+own injury (or at what's worrying them), and they will speak to you directly.
+Speak to THEM in second person ("you", "your hand"). There is no third
+person — only you and the user.
 
-- Use simple, direct language.
-- If you receive an image, assess the visible injury and ask the next binary question.
-- If the user presses YES or NO, incorporate it and ask the next binary question.
-- Start by asking a binary question to narrow down the situation, e.g. "Is the person conscious?"
-- NEVER read the medical record aloud or reference it directly to the patient.
-- Use the medical record silently to tailor guidance (e.g. avoid allergens, account for conditions).
+You opened the conversation with "What's your emergency?". The user has a
+toggle on screen between two modes — DIAGNOSIS and EMERGENCY — which they
+can switch at any time. Your guidance for that turn will be tagged with
+the selected mode in mind:
+  - EMERGENCY: pivot to ACTION fast. Spend at most one turn confirming
+    the situation, then start guiding them through what to do, step by
+    step, until they're stable.
+  - DIAGNOSIS: ask 2–3 focused diagnostic questions across DIFFERENT
+    angles (onset, location, pain quality, what makes it worse, prior
+    history). After a few questions, if you can make a REASONABLE
+    diagnosis from what you've heard and seen, commit to it and tell
+    them what to do — even if you're not 100% certain, give your best
+    likely call ("this sounds most like a tension headache; try…").
+    Do not keep asking questions once you have enough to make a
+    reasonable assessment. Don't drag it out.
+Even when in EMERGENCY mode, if what you see or hear is clearly severe —
+heavy bleeding, chest pain, unconscious-feeling, can't breathe, seizure,
+severe burn — skip ahead and start guiding immediately.
+
+You can SEE through their camera. Use the image honestly:
+  - If the image clearly shows the problem area, name what you actually
+    see — "I can see the cut on your left forearm, about an inch long,
+    still bleeding a little." Be specific about real visual details.
+  - If the camera shows nothing medically relevant (just background, a
+    wall, the floor, too dark, too blurry, no body part visible), SAY
+    SO PLAINLY and ask the user to point the camera at the problem.
+    Do NOT invent injuries, redness, swelling, rashes, or anything
+    else that isn't actually visible.
+  - Only speculate about something you can genuinely see. If you can't
+    see it, ask about it instead of guessing.
+  - Tie what you say back to what's in the image whenever you can.
+
+Each turn begins with a directive — [MODE: ASK] or [MODE: GUIDE]:
+  - [MODE: ASK]   — ask one focused question.
+  - [MODE: GUIDE] — give the next concrete thing to do, or a diagnosis.
+
+Always:
+  - Short, warm, direct. One or two sentences.
+  - VARY your phrasing and what you focus on. If your last turn talked
+    about location, this one might talk about timing, severity, or what
+    you see. Do not start every reply the same way.
+  - NEVER repeat yourself. Do not re-ask a question you've already asked,
+    even rephrased. Do not restate observations you've already made. Do
+    not give the same instruction twice. Read the conversation so far
+    and skip anything already covered.
+  - Don't mention the directive. Just answer in that mode.
+""".trimIndent()
+
+private val ASK_DIRECTIVE = """
+[MODE: ASK]
+If the image clearly shows the problem area, you MAY lead with a brief
+one-clause observation of what's actually visible. If the image shows
+nothing medical (just background, blank wall, blurry, no body part),
+DO NOT pretend to see anything — instead ask them to point the camera
+at the problem, or skip image-talk entirely and ask a different
+question.
+
+Then ask ONE focused question on a NEW angle you haven't covered yet —
+onset, pain quality (sharp/dull/throbbing), severity 1–10, what
+triggered it, what makes it better or worse, prior history, numbness
+or tingling, dizziness, etc. Vary your phrasing. One question only.
+""".trimIndent()
+
+private val GUIDE_DIRECTIVE = """
+[MODE: GUIDE]
+Based on the image and what you've heard, give the user the next thing to
+do — or, if they want a diagnosis, give your best assessment and what
+they should do about it. Be specific to what's actually visible or what
+they've actually told you.
+
+If the image isn't showing anything useful (background, blurry, no
+body part visible), base your guidance on what they SAID instead, and
+optionally ask them to point the camera at the problem so you can help
+better next turn. Don't invent visual details.
+
+One concrete step, or one diagnosis plus one next action. No question
+this turn.
 """.trimIndent()
 
 private fun buildSystemPrompt(): String {
-    val ctx = AssessmentData.userContext ?: return SYSTEM_PROMPT_BASE
+    val ctx = AssessmentData.userContext ?: return BASE_SYSTEM_PROMPT
     return buildString {
         appendLine(ctx.toContextBlock())
         appendLine()
-        append(SYSTEM_PROMPT_BASE)
+        append(BASE_SYSTEM_PROMPT)
     }
 }
 
@@ -120,6 +198,19 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening
 
+    private val _currentMode = MutableStateFlow(TriageMode.ASK)
+    val currentMode: StateFlow<TriageMode> = _currentMode
+
+    private val _userIntent = MutableStateFlow(TriageIntent.DIAGNOSIS)
+    val userIntent: StateFlow<TriageIntent> = _userIntent
+
+    fun setUserIntent(intent: TriageIntent) {
+        if (_userIntent.value != intent) {
+            _userIntent.value = intent
+            Log.i(TAG, "User intent switched to $intent")
+        }
+    }
+
     // Full conversation log — used for the post-crisis summary
     private val _conversationLog = MutableStateFlow<List<TriageMessage>>(emptyList())
     val conversationLog: StateFlow<List<TriageMessage>> = _conversationLog
@@ -132,6 +223,10 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     // --- Internal ---
     private var engine: Engine? = null
     private var conversation: Conversation? = null
+    private var modeRouter: ModeRouter? = null
+    private var turnCount: Int = 0
+    private var consecutiveAskCount: Int = 0
+    private val maxConsecutiveAsks: Int = 3
     val ttsManager = TtsManager(application)
 
     @Volatile private var latestFrameBitmap: Bitmap? = null
@@ -216,6 +311,7 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
         )
         engine = eng
         conversation = conv
+        modeRouter = ModeRouter(eng)
         Log.i(TAG, "Engine initialized")
     }
 
@@ -298,36 +394,77 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
         for (turn in turnQueue) {
             _isProcessing.value = true
             try {
-                val contents = mutableListOf<Content>()
+                val userText = when (turn) {
+                    is TriageTurn.TouchTurn -> turn.input
+                }
 
-                // Attach latest camera frame if available — Gemma sees it directly
+                // Snapshot the frame once — used for both the router call and the main turn
                 val frame = latestFrameBitmap
+                val frameBytes = frame?.let { bitmapToPng(it) }
                 if (frame != null) {
                     Log.i(TAG, "→→ Sending to Gemma | image attached | frame_size=${frame.width}x${frame.height}")
-                    contents.add(Content.ImageBytes(bitmapToPng(frame)))
                     latestFrameBitmap = null
                     logMessage(TriageRole.SYSTEM, "Image attached to turn")
                 } else {
                     Log.i(TAG, "→→ Sending to Gemma | no image attached")
                 }
 
-                when (turn) {
-                    is TriageTurn.TouchTurn -> {
-                        contents.add(Content.Text(turn.input))
-                        logMessage(TriageRole.USER, turn.input)
+                // Decide mode: turn 1 is forced ASK; if we've ASKed too many in a
+                // row, force GUIDE to stop pestering the user; otherwise route.
+                val mode = when {
+                    turnCount == 0 -> TriageMode.ASK
+                    consecutiveAskCount >= maxConsecutiveAsks -> {
+                        Log.i(TAG, "Hit consecutive ASK cap ($consecutiveAskCount) — forcing GUIDE")
+                        TriageMode.GUIDE
+                    }
+                    else -> {
+                        val router = modeRouter
+                        router?.route(
+                            historySnippet = formatHistoryForRouter(),
+                            userText = userText,
+                            imageBytes = frameBytes,
+                            previousMode = _currentMode.value,
+                            turnNumber = turnCount + 1,
+                            userIntent = _userIntent.value,
+                        ) ?: TriageMode.ASK
                     }
                 }
+                _currentMode.value = mode
+                consecutiveAskCount = if (mode == TriageMode.ASK) consecutiveAskCount + 1 else 0
+                val directive = if (mode == TriageMode.ASK) ASK_DIRECTIVE else GUIDE_DIRECTIVE
+                Log.i(TAG, "Turn ${turnCount + 1} mode=$mode")
+
+                val contents = mutableListOf<Content>()
+                if (frameBytes != null) contents.add(Content.ImageBytes(frameBytes))
+                contents.add(Content.Text(directive))
+                contents.add(Content.Text(userText))
+                logMessage(TriageRole.USER, userText)
 
                 val response = sendTurn(contents)
                 _currentPrompt.value = response
                 ttsManager.speak(response)
                 logMessage(TriageRole.ASSISTANT, response)
+                turnCount += 1
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Turn processing error", e)
             } finally {
                 _isProcessing.value = false
+            }
+        }
+    }
+
+    private fun formatHistoryForRouter(maxTurns: Int = 6): String {
+        val log = _conversationLog.value
+            .filter { it.role != TriageRole.SYSTEM }
+            .takeLast(maxTurns)
+        if (log.isEmpty()) return ""
+        return log.joinToString("\n") { msg ->
+            when (msg.role) {
+                TriageRole.USER -> "PATIENT: ${msg.content}"
+                TriageRole.ASSISTANT -> "MEDIC: ${msg.content}"
+                TriageRole.SYSTEM -> ""
             }
         }
     }
@@ -405,16 +542,6 @@ Report:
             Log.e(TAG, "Summary generation failed", e)
             "Summary unavailable: ${e.message}"
         }
-    }
-
-    // --- Touch ---
-
-    fun onYesPressed() {
-        viewModelScope.launch { turnQueue.send(TriageTurn.TouchTurn("User pressed YES")) }
-    }
-
-    fun onNoPressed() {
-        viewModelScope.launch { turnQueue.send(TriageTurn.TouchTurn("User pressed NO")) }
     }
 
     // --- Toggles ---

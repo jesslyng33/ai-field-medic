@@ -261,6 +261,7 @@ fun FieldMedicNavHost(navController: NavHostController) {
                 TriageLoopScreen(
                     viewModel = triageVm,
                     onExit = { navController.navigateUp() },
+                    onEndSession = { navController.navigate(ROUTE_SUMMARY) },
                 )
             }
 
