@@ -62,6 +62,8 @@ import kotlin.math.roundToInt
 fun SettingsScreen(
     onBack: () -> Unit,
     onEditProfile: () -> Unit,
+    onViewProfile: () -> Unit = {},
+    onEditVitals: () -> Unit = {},
     onEditAllergies: () -> Unit,
     onEditConditions: () -> Unit,
     onEditMedications: () -> Unit,
@@ -108,9 +110,9 @@ fun SettingsScreen(
                     age?.let { "$it yrs" },
                     it.biologicalSex.takeIf { s -> s.isNotBlank() },
                     it.bloodType.takeIf { b -> b.isNotBlank() },
-                ).joinToString(" · ").ifEmpty { "Tap to complete profile" }
-            } ?: "Tap to complete profile",
-            onClick = onEditProfile,
+                ).joinToString(" · ").ifEmpty { "Tap to view profile" }
+            } ?: "Tap to view profile",
+            onClick = onViewProfile,
         )
 
         Spacer(Modifier.height(28.dp))
@@ -121,7 +123,7 @@ fun SettingsScreen(
             summary = profile?.profile?.let {
                 "${it.weightKg.roundToInt()} kg · ${it.heightCm.roundToInt()} cm · ${it.bloodType.ifBlank { "Unknown" }}"
             } ?: "Not set",
-            onClick = onEditProfile,
+            onClick = onEditVitals,
         )
         SettingsRow(
             icon = Icons.Filled.Warning,

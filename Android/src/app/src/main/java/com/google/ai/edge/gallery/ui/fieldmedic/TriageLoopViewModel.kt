@@ -46,14 +46,25 @@ private const val MODEL_PATH = "/data/local/tmp/gemma-4-E2B-it.litertlm"
 private const val FRAME_INTERVAL_MS = 5000L
 private const val OPENING_LINE = "What's your emergency?"
 
-private val SYSTEM_PROMPT = """
-You are a calm, helpful health medic guiding someone through a medical situation in the field.
+private val SYSTEM_PROMPT_BASE = """
+You are an emergency field medic dispatcher guiding a person through treating an injury in a remote location with no medical help available.
 
 - Use simple, direct language.
-- Keep responses short — one or two sentences.
-- You can ask questions, give instructions, or describe what you see.
-- If you receive an image, look at it and respond to what you see.
+- If you receive an image, assess the visible injury and ask the next binary question.
+- If the user presses YES or NO, incorporate it and ask the next binary question.
+- Start by asking a binary question to narrow down the situation, e.g. "Is the person conscious?"
+- NEVER read the medical record aloud or reference it directly to the patient.
+- Use the medical record silently to tailor guidance (e.g. avoid allergens, account for conditions).
 """.trimIndent()
+
+private fun buildSystemPrompt(): String {
+    val ctx = AssessmentData.userContext ?: return SYSTEM_PROMPT_BASE
+    return buildString {
+        appendLine(ctx.toContextBlock())
+        appendLine()
+        append(SYSTEM_PROMPT_BASE)
+    }
+}
 
 enum class LoopState { INITIALIZING, RUNNING, ERROR }
 
@@ -149,8 +160,8 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                 initEngine()
                 _loopState.value = LoopState.RUNNING
 
-                // Prime conversation with system context, then use hardcoded opening
-                sendTurn(listOf(Content.Text(SYSTEM_PROMPT)))
+                // Prime conversation with system context + patient record, then use hardcoded opening
+                sendTurn(listOf(Content.Text(buildSystemPrompt())))
                 _currentPrompt.value = OPENING_LINE
                 ttsManager.speak(OPENING_LINE)
                 logMessage(TriageRole.ASSISTANT, OPENING_LINE)

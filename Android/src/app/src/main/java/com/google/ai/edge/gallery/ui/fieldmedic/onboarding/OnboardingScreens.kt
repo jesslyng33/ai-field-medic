@@ -12,18 +12,26 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -49,7 +57,6 @@ import com.google.ai.edge.gallery.ui.fieldmedic.FMBackground
 import com.google.ai.edge.gallery.ui.fieldmedic.FMBorder
 import com.google.ai.edge.gallery.ui.fieldmedic.FMCard
 import com.google.ai.edge.gallery.ui.fieldmedic.FMDivider
-import com.google.ai.edge.gallery.ui.fieldmedic.FMGreen
 import com.google.ai.edge.gallery.ui.fieldmedic.FMGreenBright
 import com.google.ai.edge.gallery.ui.fieldmedic.FMPrimaryButton
 import com.google.ai.edge.gallery.ui.fieldmedic.FMRed
@@ -229,21 +236,114 @@ fun OnboardingVitalsScreen(
         onBack = onBack,
         bottom = { OnboardingNavBar(onBack = onBack, onContinue = onContinue) },
         content = {
-            ValueSlider(
-                label = "WEIGHT",
-                value = vm.weightKg,
-                onChange = { vm.weightKg = it },
-                range = 30f..200f,
-                unit = "kg",
-            )
+            // Unit toggle
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(FMSurface)
+                    .padding(4.dp),
+            ) {
+                listOf("Imperial (lbs / ft)" to false, "Metric (kg / cm)" to true).forEach { (label, isMetric) ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f, fill = true)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (vm.useMetric == isMetric) FMRed else Color.Transparent)
+                            .clickable { vm.useMetric = isMetric }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            label,
+                            color = if (vm.useMetric == isMetric) Color.White else FMTextSub,
+                            fontSize = 12.sp,
+                            fontWeight = if (vm.useMetric == isMetric) FontWeight.Bold else FontWeight.Normal,
+                            fontFamily = appFontFamily,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
+                }
+            }
+
             Spacer(Modifier.height(28.dp))
-            ValueSlider(
-                label = "HEIGHT",
-                value = vm.heightCm,
-                onChange = { vm.heightCm = it },
-                range = 100f..230f,
-                unit = "cm",
-            )
+
+            if (vm.useMetric) {
+                ValueSlider(
+                    label = "WEIGHT",
+                    value = vm.weightKg,
+                    onChange = { vm.weightKg = it },
+                    range = 30f..200f,
+                    unit = "kg",
+                )
+                Spacer(Modifier.height(28.dp))
+                ValueSlider(
+                    label = "HEIGHT",
+                    value = vm.heightCm,
+                    onChange = { vm.heightCm = it },
+                    range = 100f..230f,
+                    unit = "cm",
+                )
+            } else {
+                ValueSlider(
+                    label = "WEIGHT",
+                    value = vm.displayWeightLbs,
+                    onChange = { vm.setWeightFromLbs(it) },
+                    range = 66f..440f,
+                    unit = "lbs",
+                )
+                Spacer(Modifier.height(28.dp))
+                // Imperial height
+                FMSectionLabel("HEIGHT")
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        "${vm.displayHeightFt}'",
+                        color = FMText,
+                        fontSize = 48.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = appFontFamily,
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        "${vm.displayHeightIn}\"",
+                        color = FMText,
+                        fontSize = 48.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = appFontFamily,
+                    )
+                }
+                Slider(
+                    value = vm.displayHeightFt.toFloat(),
+                    onValueChange = { vm.setHeightFromFtIn(it.toInt(), vm.displayHeightIn) },
+                    valueRange = 3f..7f,
+                    steps = 3,
+                    colors = SliderDefaults.colors(thumbColor = FMRed, activeTrackColor = FMRed, inactiveTrackColor = FMBorder),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("Feet", color = FMTextSub, fontSize = 11.sp, fontFamily = appFontFamily)
+                    Text("${vm.displayHeightFt} ft", color = FMTextSub, fontSize = 11.sp, fontFamily = appFontFamily)
+                }
+                Spacer(Modifier.height(12.dp))
+                Slider(
+                    value = vm.displayHeightIn.toFloat(),
+                    onValueChange = { vm.setHeightFromFtIn(vm.displayHeightFt, it.toInt()) },
+                    valueRange = 0f..11f,
+                    steps = 10,
+                    colors = SliderDefaults.colors(thumbColor = FMRed, activeTrackColor = FMRed, inactiveTrackColor = FMBorder),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("Inches", color = FMTextSub, fontSize = 11.sp, fontFamily = appFontFamily)
+                    Text("${vm.displayHeightIn} in", color = FMTextSub, fontSize = 11.sp, fontFamily = appFontFamily)
+                }
+            }
+
             Spacer(Modifier.height(28.dp))
             FMSectionLabel("BLOOD TYPE")
             Spacer(Modifier.height(10.dp))
@@ -314,22 +414,30 @@ fun OnboardingAllergiesScreen(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun OnboardingConditionsScreen(
     vm: OnboardingViewModel,
     onBack: () -> Unit,
     onContinue: () -> Unit,
 ) {
-    val common = listOf(
+    val commonConditions = listOf(
         "Diabetes", "Asthma", "Heart disease", "Seizure disorder",
         "Hemophilia", "COPD", "Stroke history", "High blood pressure",
+        "Kidney disease", "Liver disease", "Cancer", "Thyroid disorder",
+        "Anxiety disorder", "Depression", "HIV/AIDS", "Autism spectrum",
     )
-    var customOpen by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var dropdownExpanded by remember { mutableStateOf(false) }
+    val suggestions = remember(query, vm.conditions.toList()) {
+        if (query.length < 1) emptyList()
+        else commonConditions.filter {
+            it.contains(query, ignoreCase = true) && it !in vm.conditions
+        }.take(6)
+    }
 
     OnboardingStep(
         title = "ANY\nCONDITIONS?",
-        subtitle = "Tap any that apply. These change how Gemma responds.",
+        subtitle = "These change how Gemma responds to your emergency.",
         step = 4,
         total = TOTAL_STEPS,
         onBack = onBack,
@@ -341,32 +449,83 @@ fun OnboardingConditionsScreen(
             )
         },
         content = {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                common.forEach { condition ->
-                    ChoiceChip(
-                        text = condition,
-                        selected = condition in vm.conditions,
-                        onClick = { vm.toggleCondition(condition) },
-                    )
+            Box {
+                FMTextField(
+                    value = query,
+                    onValueChange = {
+                        query = it
+                        dropdownExpanded = it.isNotBlank()
+                    },
+                    placeholder = "Search or type a condition...",
+                )
+                DropdownMenu(
+                    expanded = dropdownExpanded && (suggestions.isNotEmpty() || query.isNotBlank()),
+                    onDismissRequest = { dropdownExpanded = false },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(FMCard),
+                ) {
+                    suggestions.forEach { suggestion ->
+                        DropdownMenuItem(
+                            text = { Text(suggestion, color = FMText, fontSize = 14.sp, fontFamily = appFontFamily) },
+                            onClick = {
+                                vm.addCustomCondition(suggestion)
+                                query = ""
+                                dropdownExpanded = false
+                            },
+                        )
+                    }
+                    val trimmed = query.trim()
+                    if (trimmed.isNotBlank() && trimmed !in vm.conditions && !commonConditions.any { it.equals(trimmed, ignoreCase = true) }) {
+                        DropdownMenuItem(
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Filled.Add, null, tint = FMRed, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.size(6.dp))
+                                    Text("Add \"$trimmed\"", color = FMRed, fontSize = 14.sp, fontFamily = appFontFamily)
+                                }
+                            },
+                            onClick = {
+                                vm.addCustomCondition(trimmed)
+                                query = ""
+                                dropdownExpanded = false
+                            },
+                        )
+                    }
                 }
-                ChoiceChip(text = "+ Other", selected = false, onClick = { customOpen = true })
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            if (vm.conditions.isEmpty()) {
+                EmptyHint("None — that's fine")
+            } else {
+                vm.conditions.forEach { condition ->
+                    ConditionRow(condition = condition, onRemove = { vm.removeCondition(condition) })
+                    Spacer(Modifier.height(8.dp))
+                }
             }
         },
     )
+}
 
-    if (customOpen) {
-        TextEntryDialog(
-            title = "Other condition",
-            placeholder = "e.g. Lupus",
-            onDismiss = { customOpen = false },
-            onConfirm = {
-                vm.addCustomCondition(it)
-                customOpen = false
-            },
-        )
+@Composable
+private fun ConditionRow(condition: String, onRemove: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(FMCard)
+            .border(1.dp, FMBorder, RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Filled.Check, null, tint = FMGreenBright, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.size(10.dp))
+        Text(condition, color = FMText, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, fontFamily = appFontFamily, modifier = Modifier.weight(1f))
+        IconButton(onClick = onRemove) {
+            Icon(Icons.Filled.Close, "Remove", tint = FMTextSub, modifier = Modifier.size(18.dp))
+        }
     }
 }
 
@@ -440,21 +599,42 @@ fun OnboardingContactScreen(
             )
         },
         content = {
-            FMSectionLabel("FULL NAME")
+            FMSectionLabel("FULL NAME  *")
             Spacer(Modifier.height(10.dp))
-            FMTextField(value = vm.contactName, onValueChange = { vm.contactName = it }, placeholder = "Name")
+            FMTextField(value = vm.contactName, onValueChange = { vm.contactName = it }, placeholder = "Contact's full name")
+
             Spacer(Modifier.height(20.dp))
-            FMSectionLabel("PHONE")
+            FMSectionLabel("PHONE  *")
             Spacer(Modifier.height(10.dp))
-            FMTextField(value = vm.contactPhone, onValueChange = { vm.contactPhone = it }, placeholder = "+1 555 555 5555")
+            FMTextField(value = vm.contactPhone, onValueChange = { vm.contactPhone = it }, placeholder = "+1 555 555 5555 or 10-digit")
+            if (vm.contactPhone.isNotBlank() && !vm.contactPhoneValid) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Enter a valid phone number (10 digits, or start with + for international)",
+                    color = FMRedBright,
+                    fontSize = 11.sp,
+                    fontFamily = appFontFamily,
+                    lineHeight = 15.sp,
+                )
+            }
+
             Spacer(Modifier.height(20.dp))
-            FMSectionLabel("RELATIONSHIP")
+            FMSectionLabel("RELATIONSHIP  *")
             Spacer(Modifier.height(10.dp))
             Segmented(
                 options = rels,
                 selected = vm.contactRelationship,
                 onSelect = { vm.contactRelationship = it },
             )
+            if (vm.contactRelationship == "Other") {
+                Spacer(Modifier.height(10.dp))
+                FMTextField(
+                    value = vm.contactRelationshipCustom,
+                    onValueChange = { vm.contactRelationshipCustom = it },
+                    placeholder = "e.g. Coach, Neighbor, Doctor",
+                )
+            }
+
             Spacer(Modifier.height(20.dp))
             ToggleRow(
                 title = "CAN MAKE MEDICAL DECISIONS",
@@ -521,16 +701,12 @@ private fun SummaryRow(label: String, value: String) {
 }
 
 @Composable
-private fun ChoiceChip(text: String, selected: Boolean, onClick: () -> Unit) {
+private fun ChoiceChip(text: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .clip(RoundedCornerShape(20.dp))
             .background(if (selected) FMRed else FMSurface)
-            .border(
-                1.dp,
-                if (selected) FMRed else FMBorder,
-                RoundedCornerShape(20.dp),
-            )
+            .border(1.dp, if (selected) FMRed else FMBorder, RoundedCornerShape(20.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         contentAlignment = Alignment.Center,
@@ -541,6 +717,7 @@ private fun ChoiceChip(text: String, selected: Boolean, onClick: () -> Unit) {
             fontSize = 13.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             fontFamily = appFontFamily,
+            textAlign = TextAlign.Center,
         )
     }
 }
@@ -842,13 +1019,16 @@ private fun SimpleYearPicker(
 
 @Composable
 private fun NumberStepper(label: String, value: Int, range: IntRange, onChange: (Int) -> Unit) {
+    var showEdit by remember { mutableStateOf(false) }
+    var editText by remember(value) { mutableStateOf(value.toString()) }
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, color = FMTextSub, fontSize = 12.sp, fontFamily = appFontFamily, modifier = Modifier.weight(1f))
         IconButton(onClick = { if (value > range.first) onChange(value - 1) }) {
-            Icon(Icons.Filled.Close, null, tint = FMTextSub, modifier = Modifier.size(18.dp))
+            Icon(Icons.Filled.Remove, null, tint = FMTextSub, modifier = Modifier.size(18.dp))
         }
         Text(
             value.toString(),
@@ -858,11 +1038,51 @@ private fun NumberStepper(label: String, value: Int, range: IntRange, onChange: 
             fontFamily = appFontFamily,
             modifier = Modifier
                 .background(FMCard, RoundedCornerShape(8.dp))
+                .clickable {
+                    editText = value.toString()
+                    showEdit = true
+                }
                 .padding(horizontal = 18.dp, vertical = 8.dp),
         )
         IconButton(onClick = { if (value < range.last) onChange(value + 1) }) {
             Icon(Icons.Filled.Add, null, tint = FMRed, modifier = Modifier.size(18.dp))
         }
+    }
+
+    if (showEdit) {
+        AlertDialog(
+            onDismissRequest = { showEdit = false },
+            containerColor = FMSurface,
+            title = { Text(label, color = FMText, fontFamily = appFontFamily) },
+            text = {
+                FMTextField(
+                    value = editText,
+                    onValueChange = { editText = it.filter { c -> c.isDigit() } },
+                    placeholder = "${range.first}–${range.last}",
+                )
+            },
+            confirmButton = {
+                Text(
+                    "OK",
+                    color = FMRedBright,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = appFontFamily,
+                    modifier = Modifier.clickable {
+                        val parsed = editText.toIntOrNull()
+                        if (parsed != null && parsed in range) onChange(parsed)
+                        showEdit = false
+                    }.padding(12.dp),
+                )
+            },
+            dismissButton = {
+                Text(
+                    "CANCEL",
+                    color = FMTextSub,
+                    fontFamily = appFontFamily,
+                    modifier = Modifier.clickable { showEdit = false }.padding(12.dp),
+                )
+            },
+        )
     }
 }
 
@@ -909,34 +1129,173 @@ private fun AllergyDialog(
 ) {
     var allergen by remember { mutableStateOf("") }
     var severity by remember { mutableStateOf("moderate") }
-    var reaction by remember { mutableStateOf("") }
+    var reactionQuery by remember { mutableStateOf("") }
+    var selectedReaction by remember { mutableStateOf("") }
+    var showSeverityInfo by remember { mutableStateOf(false) }
+    var showReactionInfo by remember { mutableStateOf(false) }
+    var reactionDropdownExpanded by remember { mutableStateOf(false) }
 
-    val severities = listOf("mild", "moderate", "severe", "life-threatening")
-    val reactions = listOf("Anaphylaxis", "Rash", "Hives", "Swelling", "Breathing", "GI", "Other")
+    val severityDescriptions = mapOf(
+        "mild" to "Minor, localized reactions (runny nose, mild rash). No danger signs.",
+        "moderate" to "More widespread symptoms (hives, vomiting). May need antihistamines.",
+        "severe" to "Multi-system symptoms (severe swelling, difficulty breathing). May need epinephrine.",
+        "life-threatening" to "Anaphylaxis — airway swelling, blood pressure drop, shock. EpiPen required immediately.",
+    )
+    val reactionDescriptions = mapOf(
+        "Anaphylaxis" to "Severe whole-body reaction with airway swelling and/or shock.",
+        "Rash" to "Localized red, irritated skin.",
+        "Hives" to "Raised, itchy welts anywhere on the body.",
+        "Swelling" to "Swelling of face, lips, tongue, or throat (angioedema).",
+        "Breathing difficulty" to "Wheezing, shortness of breath, or chest tightness.",
+        "GI symptoms" to "Nausea, vomiting, diarrhea, or stomach cramps.",
+        "Itching" to "Generalized or localized itching without visible rash.",
+        "Flushing" to "Sudden redness and warmth of the skin.",
+        "Dizziness" to "Lightheadedness or feeling faint.",
+        "Throat tightening" to "Sensation of the throat closing (laryngeal edema).",
+    )
+    val reactionSuggestions = listOf(
+        "Anaphylaxis", "Rash", "Hives", "Swelling", "Breathing difficulty",
+        "GI symptoms", "Itching", "Flushing", "Dizziness", "Throat tightening",
+    )
+    val effectiveReaction = selectedReaction.ifBlank { reactionQuery.trim() }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = FMSurface,
-        title = { Text("Allergy", color = FMText, fontFamily = appFontFamily) },
+        title = { Text("Add Allergy", color = FMText, fontFamily = appFontFamily, fontWeight = FontWeight.Bold) },
         text = {
-            Column {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 FMSectionLabel("ALLERGEN")
                 Spacer(Modifier.height(8.dp))
-                FMTextField(value = allergen, onValueChange = { allergen = it }, placeholder = "e.g. Penicillin")
+                FMTextField(value = allergen, onValueChange = { allergen = it }, placeholder = "e.g. Penicillin, Peanuts")
+
                 Spacer(Modifier.height(16.dp))
-                FMSectionLabel("SEVERITY")
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FMSectionLabel("SEVERITY")
+                    Spacer(Modifier.size(6.dp))
+                    Icon(
+                        Icons.Filled.Info,
+                        contentDescription = "Severity info",
+                        tint = FMTextSub,
+                        modifier = Modifier.size(14.dp).clickable { showSeverityInfo = true },
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    severities.forEach { s ->
-                        ChoiceChip(text = s, selected = severity == s, onClick = { severity = s })
+                // Equal-width 2x2 severity grid
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ChoiceChip("mild", severity == "mild", { severity = "mild" }, Modifier.weight(1f))
+                        ChoiceChip("moderate", severity == "moderate", { severity = "moderate" }, Modifier.weight(1f))
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ChoiceChip("severe", severity == "severe", { severity = "severe" }, Modifier.weight(1f))
+                        ChoiceChip("life-threatening", severity == "life-threatening", { severity = "life-threatening" }, Modifier.weight(1f))
                     }
                 }
+
                 Spacer(Modifier.height(16.dp))
-                FMSectionLabel("REACTION")
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FMSectionLabel("REACTION TYPE")
+                    Spacer(Modifier.size(6.dp))
+                    Icon(
+                        Icons.Filled.Info,
+                        contentDescription = "Reaction info",
+                        tint = FMTextSub,
+                        modifier = Modifier.size(14.dp).clickable { showReactionInfo = true },
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    reactions.forEach { r ->
-                        ChoiceChip(text = r, selected = reaction == r, onClick = { reaction = r })
+                // Reaction text field with autofill dropdown
+                Box {
+                    FMTextField(
+                        value = reactionQuery,
+                        onValueChange = { query ->
+                            reactionQuery = query
+                            selectedReaction = ""
+                            reactionDropdownExpanded = query.isNotBlank()
+                        },
+                        placeholder = "Type a reaction...",
+                    )
+                    DropdownMenu(
+                        expanded = reactionDropdownExpanded,
+                        onDismissRequest = { reactionDropdownExpanded = false },
+                        modifier = Modifier
+                            .background(FMSurface)
+                            .border(1.dp, FMBorder, RoundedCornerShape(8.dp)),
+                    ) {
+                        val query = reactionQuery.trim()
+                        val filtered = reactionSuggestions.filter {
+                            it.contains(query, ignoreCase = true)
+                        }
+                        filtered.forEach { suggestion ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        suggestion,
+                                        color = FMText,
+                                        fontSize = 14.sp,
+                                        fontFamily = appFontFamily,
+                                    )
+                                },
+                                onClick = {
+                                    selectedReaction = suggestion
+                                    reactionQuery = suggestion
+                                    reactionDropdownExpanded = false
+                                },
+                            )
+                        }
+                        // "Add [typed text]" option if not already in list
+                        if (query.isNotBlank() && filtered.none { it.equals(query, ignoreCase = true) }) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "Add \"$query\"",
+                                        color = FMRedBright,
+                                        fontSize = 14.sp,
+                                        fontFamily = appFontFamily,
+                                    )
+                                },
+                                onClick = {
+                                    selectedReaction = query
+                                    reactionQuery = query
+                                    reactionDropdownExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+                // Selected reaction chip tag
+                if (selectedReaction.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(FMRed.copy(alpha = 0.15f))
+                            .border(1.dp, FMRed.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            selectedReaction,
+                            color = FMRedBright,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = appFontFamily,
+                        )
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Clear reaction",
+                            tint = FMRedBright,
+                            modifier = Modifier
+                                .size(14.dp)
+                                .clickable {
+                                    selectedReaction = ""
+                                    reactionQuery = ""
+                                },
+                        )
                     }
                 }
             }
@@ -944,14 +1303,14 @@ private fun AllergyDialog(
         confirmButton = {
             Text(
                 "SAVE",
-                color = if (allergen.isNotBlank()) FMRedBright else FMBorder,
+                color = if (allergen.isNotBlank() && effectiveReaction.isNotBlank()) FMRedBright else FMBorder,
                 fontWeight = FontWeight.Bold,
                 fontFamily = appFontFamily,
-                modifier = Modifier
-                    .clickable {
-                        if (allergen.isNotBlank()) onSave(allergen, severity, reaction.ifBlank { "Unknown" })
+                modifier = Modifier.clickable {
+                    if (allergen.isNotBlank() && effectiveReaction.isNotBlank()) {
+                        onSave(allergen, severity, effectiveReaction)
                     }
-                    .padding(12.dp),
+                }.padding(12.dp),
             )
         },
         dismissButton = {
@@ -963,8 +1322,67 @@ private fun AllergyDialog(
             )
         },
     )
+
+    if (showSeverityInfo) {
+        AlertDialog(
+            onDismissRequest = { showSeverityInfo = false },
+            containerColor = FMSurface,
+            title = { Text("Severity Guide", color = FMText, fontFamily = appFontFamily, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    severityDescriptions.forEach { (level, desc) ->
+                        Row {
+                            Text(
+                                level.replaceFirstChar { it.uppercase() },
+                                color = severityColor(level),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = appFontFamily,
+                                modifier = Modifier.width(110.dp),
+                            )
+                            Text(desc, color = FMTextSub, fontSize = 12.sp, fontFamily = appFontFamily, lineHeight = 17.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Text("GOT IT", color = FMRedBright, fontWeight = FontWeight.Bold, fontFamily = appFontFamily,
+                    modifier = Modifier.clickable { showSeverityInfo = false }.padding(12.dp))
+            },
+        )
+    }
+
+    if (showReactionInfo) {
+        AlertDialog(
+            onDismissRequest = { showReactionInfo = false },
+            containerColor = FMSurface,
+            title = { Text("Reaction Types", color = FMText, fontFamily = appFontFamily, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    reactionDescriptions.forEach { (type, desc) ->
+                        Row {
+                            Text(
+                                type,
+                                color = FMText,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                fontFamily = appFontFamily,
+                                modifier = Modifier.width(130.dp),
+                            )
+                            Text(desc, color = FMTextSub, fontSize = 12.sp, fontFamily = appFontFamily, lineHeight = 17.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Text("GOT IT", color = FMRedBright, fontWeight = FontWeight.Bold, fontFamily = appFontFamily,
+                    modifier = Modifier.clickable { showReactionInfo = false }.padding(12.dp))
+            },
+        )
+    }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun MedicationDialog(
     onDismiss: () -> Unit,
@@ -972,29 +1390,60 @@ private fun MedicationDialog(
 ) {
     var name by remember { mutableStateOf("") }
     var dosage by remember { mutableStateOf("") }
-    var frequency by remember { mutableStateOf("") }
+    var selectedFrequencies by remember { mutableStateOf(setOf<String>()) }
     var purpose by remember { mutableStateOf("") }
+
+    val frequencyPresets = listOf("Morning", "Midday", "Evening", "Night", "As needed")
+
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = FMSurface,
-        title = { Text("Medication", color = FMText, fontFamily = appFontFamily) },
+        title = { Text("Add Medication", color = FMText, fontFamily = appFontFamily, fontWeight = FontWeight.Bold) },
         text = {
-            Column {
-                FMSectionLabel("NAME")
-                Spacer(Modifier.height(8.dp))
-                FMTextField(value = name, onValueChange = { name = it }, placeholder = "e.g. Metformin")
-                Spacer(Modifier.height(12.dp))
-                FMSectionLabel("DOSAGE")
-                Spacer(Modifier.height(8.dp))
-                FMTextField(value = dosage, onValueChange = { dosage = it }, placeholder = "e.g. 500 mg")
-                Spacer(Modifier.height(12.dp))
-                FMSectionLabel("FREQUENCY")
-                Spacer(Modifier.height(8.dp))
-                FMTextField(value = frequency, onValueChange = { frequency = it }, placeholder = "e.g. Twice daily")
-                Spacer(Modifier.height(12.dp))
-                FMSectionLabel("PURPOSE (OPTIONAL)")
-                Spacer(Modifier.height(8.dp))
-                FMTextField(value = purpose, onValueChange = { purpose = it }, placeholder = "e.g. Diabetes")
+            Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                // Required name field
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        FMSectionLabel("NAME")
+                        Text(" *", color = FMRedBright, fontSize = 11.sp, fontFamily = appFontFamily)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    FMTextField(value = name, onValueChange = { name = it }, placeholder = "e.g. Metformin, Lisinopril")
+                }
+
+                // Dosage
+                Column {
+                    FMSectionLabel("DOSAGE")
+                    Spacer(Modifier.height(6.dp))
+                    FMTextField(value = dosage, onValueChange = { dosage = it }, placeholder = "e.g. 500 mg, 10 mg")
+                }
+
+                // Frequency with presets
+                Column {
+                    FMSectionLabel("WHEN TAKEN")
+                    Spacer(Modifier.height(8.dp))
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        frequencyPresets.forEach { preset ->
+                            ChoiceChip(
+                                text = preset,
+                                selected = preset in selectedFrequencies,
+                                onClick = {
+                                    selectedFrequencies = if (preset in selectedFrequencies)
+                                        selectedFrequencies - preset
+                                    else
+                                        selectedFrequencies + preset
+                                },
+                            )
+                        }
+                    }
+                }
+
+                // Purpose
+                Column {
+                    FMSectionLabel("PURPOSE (OPTIONAL)")
+                    Spacer(Modifier.height(6.dp))
+                    FMTextField(value = purpose, onValueChange = { purpose = it }, placeholder = "e.g. Diabetes, Blood pressure")
+                }
             }
         },
         confirmButton = {
@@ -1003,22 +1452,17 @@ private fun MedicationDialog(
                 color = if (name.isNotBlank()) FMRedBright else FMBorder,
                 fontWeight = FontWeight.Bold,
                 fontFamily = appFontFamily,
-                modifier = Modifier
-                    .clickable {
-                        if (name.isNotBlank()) {
-                            onSave(MedicationDraft(name, dosage, frequency, purpose))
-                        }
+                modifier = Modifier.clickable {
+                    if (name.isNotBlank()) {
+                        val freq = selectedFrequencies.joinToString(", ").ifBlank { "" }
+                        onSave(MedicationDraft(name, dosage, freq, purpose))
                     }
-                    .padding(12.dp),
+                }.padding(12.dp),
             )
         },
         dismissButton = {
-            Text(
-                "CANCEL",
-                color = FMTextSub,
-                fontFamily = appFontFamily,
-                modifier = Modifier.clickable(onClick = onDismiss).padding(12.dp),
-            )
+            Text("CANCEL", color = FMTextSub, fontFamily = appFontFamily,
+                modifier = Modifier.clickable(onClick = onDismiss).padding(12.dp))
         },
     )
 }

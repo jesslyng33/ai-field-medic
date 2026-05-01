@@ -11,16 +11,17 @@ object AssessmentData {
     var photoBitmap: Bitmap? = null
     var notes: String = ""
 
-    // User profile from onboarding
-    var bloodType: String = ""
-    var allergies: String = ""
-    var medications: String = ""
-    var conditions: String = ""
+    // Built once after trip setup; persists across assessment sessions
+    var userContext: UserMedicalContext? = null
+    var tripLocation: String = ""
+    var soloTraveler: Boolean = true
+    var firstAidKit: Set<String> = emptySet()
 
     fun clear() {
         audioWavBytes = null
         photoBitmap = null
         notes = ""
+        // userContext, tripLocation, soloTraveler, firstAidKit intentionally preserved
     }
 
     fun hasInput(): Boolean =
