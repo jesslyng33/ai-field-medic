@@ -24,6 +24,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,13 +34,19 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.ai.edge.gallery.ui.theme.appFontFamily
-import kotlinx.coroutines.delay
 
 @Composable
-fun ThinkingScreen(onReady: () -> Unit) {
+fun ThinkingScreen(viewModel: FieldMedicViewModel, onReady: () -> Unit) {
+    val state by viewModel.inferenceState.collectAsState()
+
     LaunchedEffect(Unit) {
-        delay(3500L)
-        onReady()
+        viewModel.runInference()
+    }
+
+    LaunchedEffect(state) {
+        if (state == InferenceState.DONE || state == InferenceState.ERROR) {
+            onReady()
+        }
     }
 
     val anim = rememberInfiniteTransition(label = "thinking")

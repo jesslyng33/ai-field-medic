@@ -1158,6 +1158,44 @@ constructor(
         )
     }
 
+    // --- Field Medic: inject on-device Gemma 4 E2B model ---
+    run {
+      val fieldMedicModel = Model(
+        name = "gemma-4-E2B-it (Field Medic)",
+        displayName = "Gemma 4 E2B — Field Medic",
+        url = "",
+        localModelFilePathOverride = "/data/local/tmp/gemma-4-E2B-it.litertlm",
+        configs = createLlmChatConfigs(
+          defaultMaxToken = 1024,
+          defaultTopK = 40,
+          defaultTopP = 0.95f,
+          defaultTemperature = 0.7f,
+          accelerators = listOf(Accelerator.GPU, Accelerator.CPU),
+        ).toMutableList(),
+        sizeInBytes = 2583085056L,
+        downloadFileName = "gemma-4-E2B-it.litertlm",
+        showBenchmarkButton = false,
+        showRunAgainButton = false,
+        llmSupportImage = true,
+        llmSupportAudio = true,
+        llmMaxToken = 1024,
+        accelerators = listOf(Accelerator.GPU, Accelerator.CPU),
+        isLlm = true,
+        runtimeType = RuntimeType.LITERT_LM,
+      )
+      fieldMedicModel.preProcess()
+      tasks[BuiltInTaskId.LLM_CHAT]?.models?.add(fieldMedicModel)
+      tasks[BuiltInTaskId.LLM_ASK_IMAGE]?.models?.add(fieldMedicModel)
+      tasks[BuiltInTaskId.LLM_ASK_AUDIO]?.models?.add(fieldMedicModel)
+      tasks[BuiltInTaskId.LLM_PROMPT_LAB]?.models?.add(fieldMedicModel)
+      modelDownloadStatus[fieldMedicModel.name] = ModelDownloadStatus(
+        status = ModelDownloadStatusType.SUCCEEDED,
+        receivedBytes = fieldMedicModel.sizeInBytes,
+        totalBytes = fieldMedicModel.sizeInBytes,
+      )
+      Log.i(TAG, "Field Medic: injected Gemma 4 E2B model from /data/local/tmp/")
+    }
+
     val textInputHistory = dataStoreRepository.readTextInputHistory()
     Log.d(TAG, "text input history: $textInputHistory")
 

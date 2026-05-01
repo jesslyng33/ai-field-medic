@@ -1,19 +1,35 @@
 /*
  * Field Medic — Gemma 4 E2B multimodal test harness.
- * Day 1: proves text, image, and audio input modalities work on-device.
+ * Proves text, live camera, and live mic input all work on-device.
  */
 
 package com.google.ai.edge.gallery
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
+import android.view.View
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import android.app.Activity
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
+import androidx.core.content.ContextCompat
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
@@ -25,21 +41,22 @@ import com.google.ai.edge.litertlm.Message
 import com.google.ai.edge.litertlm.MessageCallback
 import com.google.ai.edge.litertlm.SamplerConfig
 import java.io.ByteArrayOutputStream
-import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.CancellationException
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 private const val TAG = "FieldMedic"
 
 private const val MODEL_PATH =
-    "/storage/emulated/0/Android/data/com.google.aiedge.gallery/files/gemma-4-E2B-it.litertlm"
+    "/data/local/tmp/gemma-4-E2B-it.litertlm"
 
-private const val TEST_IMAGE_PATH =
-    "/storage/emulated/0/Android/data/com.google.aiedge.gallery/files/test_wound.jpg"
-private const val TEST_AUDIO_PATH =
-    "/storage/emulated/0/Android/data/com.google.aiedge.gallery/files/test_audio.wav"
+private const val SAMPLE_RATE = 16000
+private const val MAX_RECORDING_SEC = 15
 
-class TriageTestActivity : Activity() {
+class TriageTestActivity : ComponentActivity() {
 
     // Singleton engine + conversation, survives across button presses.
     companion object {
@@ -54,6 +71,37 @@ class TriageTestActivity : Activity() {
     private lateinit var btnText: Button
     private lateinit var btnImage: Button
     private lateinit var btnAudio: Button
+    private lateinit var cameraContainer: FrameLayout
+    private lateinit var previewView: PreviewView
+    private lateinit var btnCapture: Button
+    private lateinit var tvRecording: TextView
+
+    // CameraX
+    private var imageCapture: ImageCapture? = null
+    private lateinit var cameraExecutor: ExecutorService
+
+    // Audio recording
+    private var audioRecord: AudioRecord? = null
+    @Volatile private var isRecording = false
+
+    // Permission launchers
+    private val cameraPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                startCameraPreview()
+            } else {
+                appendOutput("ERROR: Camera permission denied")
+            }
+        }
+
+    private val audioPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                startAudioRecording()
+            } else {
+                appendOutput("ERROR: Microphone permission denied")
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -65,14 +113,26 @@ class TriageTestActivity : Activity() {
         btnText = findViewById(R.id.btnTextOnly)
         btnImage = findViewById(R.id.btnImage)
         btnAudio = findViewById(R.id.btnAudio)
+        cameraContainer = findViewById(R.id.cameraContainer)
+        previewView = findViewById(R.id.previewView)
+        btnCapture = findViewById(R.id.btnCapture)
+        tvRecording = findViewById(R.id.tvRecording)
+
+        cameraExecutor = Executors.newSingleThreadExecutor()
 
         if (modelLoaded) {
             tvStatus.text = "Model loaded (warm)"
         }
 
         btnText.setOnClickListener { runTextTest() }
-        btnImage.setOnClickListener { runImageTest() }
-        btnAudio.setOnClickListener { runAudioTest() }
+        btnImage.setOnClickListener { onImageButtonPressed() }
+        btnAudio.setOnClickListener { onAudioButtonPressed() }
+        btnCapture.setOnClickListener { capturePhoto() }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        cameraExecutor.shutdown()
     }
 
     // ---- Model loading (once) ------------------------------------------------
@@ -83,8 +143,6 @@ class TriageTestActivity : Activity() {
         onReady: () -> Unit,
     ) {
         if (modelLoaded && engine != null && conversation != null) {
-            // Already warm — but if we need a modality we didn't enable before,
-            // recreate the conversation (engine stays).
             onReady()
             return
         }
@@ -141,10 +199,6 @@ class TriageTestActivity : Activity() {
         }
     }
 
-    /**
-     * Tear down and rebuild Engine+Conversation with the requested modality flags.
-     * This is needed because visionBackend / audioBackend are set at Engine creation time.
-     */
     private fun reloadEngine(
         enableImage: Boolean,
         enableAudio: Boolean,
@@ -156,7 +210,6 @@ class TriageTestActivity : Activity() {
 
         thread {
             try {
-                // Close old resources.
                 try { conversation?.close() } catch (_: Exception) {}
                 try { engine?.close() } catch (_: Exception) {}
                 conversation = null
@@ -221,60 +274,213 @@ class TriageTestActivity : Activity() {
         }
     }
 
-    // ---- Milestone 2: Text + Image -------------------------------------------
+    // ---- Milestone 2: Live camera capture ------------------------------------
 
-    private fun runImageTest() {
-        val imageFile = File(TEST_IMAGE_PATH)
-        if (!imageFile.exists()) {
-            appendOutput("ERROR: test image not found at $TEST_IMAGE_PATH")
-            appendOutput("Push a JPG with: adb push test_wound.jpg /sdcard/Download/test_wound.jpg")
+    private fun onImageButtonPressed() {
+        if (cameraContainer.visibility == View.VISIBLE) {
+            // Already showing preview — hide it
+            cameraContainer.visibility = View.GONE
+            return
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            startCameraPreview()
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun startCameraPreview() {
+        cameraContainer.visibility = View.VISIBLE
+        appendOutput("Starting camera preview...")
+
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+        cameraProviderFuture.addListener({
+            val cameraProvider = cameraProviderFuture.get()
+
+            val preview = Preview.Builder().build().also {
+                it.surfaceProvider = previewView.surfaceProvider
+            }
+
+            imageCapture = ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                .build()
+
+            cameraProvider.unbindAll()
+            cameraProvider.bindToLifecycle(
+                this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageCapture
+            )
+
+            appendOutput("Camera ready — tap Capture")
+        }, ContextCompat.getMainExecutor(this))
+    }
+
+    private fun capturePhoto() {
+        val capture = imageCapture ?: run {
+            appendOutput("ERROR: ImageCapture not ready")
             return
         }
 
-        // Need vision backend — reload engine.
-        reloadEngine(enableImage = true, enableAudio = false) { doImageInference() }
+        btnCapture.isEnabled = false
+        appendOutput("Capturing photo...")
+
+        capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
+            override fun onCaptureSuccess(imageProxy: ImageProxy) {
+                val bitmap = imageProxyToBitmap(imageProxy)
+                imageProxy.close()
+
+                if (bitmap == null) {
+                    runOnUiThread {
+                        appendOutput("ERROR: failed to convert captured image")
+                        btnCapture.isEnabled = true
+                    }
+                    return
+                }
+
+                val scaled = scaleBitmap(bitmap, 1024)
+                val pngBytes = bitmapToPng(scaled)
+
+                runOnUiThread {
+                    cameraContainer.visibility = View.GONE
+                    // Unbind camera to free resources
+                    ProcessCameraProvider.getInstance(this@TriageTestActivity).get().unbindAll()
+
+                    appendOutput("Photo captured: ${scaled.width}x${scaled.height}, ${pngBytes.size} bytes")
+
+                    reloadEngine(enableImage = true, enableAudio = false) {
+                        val prompt = "Describe what you see in this image. Focus on any injuries or wounds."
+                        val contents = Contents.of(listOf(
+                            Content.ImageBytes(pngBytes),
+                            Content.Text(prompt),
+                        ))
+                        runInference("IMAGE", contents, prompt)
+                    }
+                }
+            }
+
+            override fun onError(exception: ImageCaptureException) {
+                Log.e(TAG, "Photo capture failed", exception)
+                runOnUiThread {
+                    appendOutput("ERROR capturing photo: ${exception.message}")
+                    btnCapture.isEnabled = true
+                }
+            }
+        })
     }
 
-    // ---- Milestone 3: Text + Audio -------------------------------------------
+    private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
+        val buffer = imageProxy.planes[0].buffer
+        val bytes = ByteArray(buffer.remaining())
+        buffer.get(bytes)
 
-    private fun runAudioTest() {
-        val audioFile = File(TEST_AUDIO_PATH)
-        if (!audioFile.exists()) {
-            appendOutput("ERROR: test audio not found at $TEST_AUDIO_PATH")
-            appendOutput("Push a 16kHz mono WAV with: adb push test_audio.wav /sdcard/Download/test_audio.wav")
+        val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: return null
+
+        // Apply rotation from image metadata
+        val rotation = imageProxy.imageInfo.rotationDegrees
+        if (rotation == 0) return bitmap
+
+        val matrix = Matrix()
+        matrix.postRotate(rotation.toFloat())
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    }
+
+    // ---- Milestone 3: Live mic recording -------------------------------------
+
+    private fun onAudioButtonPressed() {
+        if (isRecording) {
+            stopAudioRecording()
+        } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED
+            ) {
+                startAudioRecording()
+            } else {
+                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
+
+    private fun startAudioRecording() {
+        val minBufferSize = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+
+        try {
+            audioRecord = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                minBufferSize,
+            )
+        } catch (e: SecurityException) {
+            appendOutput("ERROR: Microphone permission not granted")
             return
         }
 
-        // Need audio backend — reload engine.
-        reloadEngine(enableImage = false, enableAudio = true) { doAudioInference() }
-    }
+        val recorder = audioRecord ?: return
+        isRecording = true
+        btnAudio.text = "Stop"
+        tvRecording.visibility = View.VISIBLE
+        setButtonsEnabled(btnText, false)
+        setButtonsEnabled(btnImage, false)
+        appendOutput("Recording audio (tap Stop when done, max ${MAX_RECORDING_SEC}s)...")
 
-    private fun doImageInference() {
-        val prompt = "Describe what you see in this image. Focus on any injuries or wounds."
-        val bitmap = BitmapFactory.decodeFile(TEST_IMAGE_PATH)
-        if (bitmap == null) {
-            appendOutput("ERROR: could not decode image at $TEST_IMAGE_PATH")
-            return
+        recorder.startRecording()
+
+        thread {
+            val audioStream = ByteArrayOutputStream()
+            val buffer = ByteArray(minBufferSize)
+            val startMs = SystemClock.elapsedRealtime()
+
+            while (isRecording) {
+                val bytesRead = recorder.read(buffer, 0, buffer.size)
+                if (bytesRead > 0) {
+                    audioStream.write(buffer, 0, bytesRead)
+                }
+                val elapsed = SystemClock.elapsedRealtime() - startMs
+                if (elapsed >= MAX_RECORDING_SEC * 1000L) {
+                    runOnUiThread { appendOutput("Max recording duration reached.") }
+                    break
+                }
+            }
+
+            recorder.stop()
+            recorder.release()
+            audioRecord = null
+            isRecording = false
+
+            val pcmBytes = audioStream.toByteArray()
+            val wavBytes = buildWav(pcmBytes, SAMPLE_RATE)
+            val durationSec = pcmBytes.size.toFloat() / (SAMPLE_RATE * 2)
+
+            Log.i(TAG, "Audio recorded: ${durationSec}s, ${wavBytes.size} bytes")
+
+            runOnUiThread {
+                btnAudio.text = "Audio"
+                tvRecording.visibility = View.GONE
+                setButtonsEnabled(btnText, true)
+                setButtonsEnabled(btnImage, true)
+                appendOutput("Audio recorded: %.1fs, ${wavBytes.size} bytes".format(durationSec))
+
+                reloadEngine(enableImage = false, enableAudio = true) {
+                    val prompt = "Listen to this audio and describe what the person is saying."
+                    val contents = Contents.of(listOf(
+                        Content.AudioBytes(wavBytes),
+                        Content.Text(prompt),
+                    ))
+                    runInference("AUDIO", contents, prompt)
+                }
+            }
         }
-        val scaled = scaleBitmap(bitmap, 1024)
-        val pngBytes = bitmapToPng(scaled)
-        appendOutput("Image loaded: ${scaled.width}x${scaled.height}, ${pngBytes.size} bytes")
-        val contents = Contents.of(listOf(
-            Content.ImageBytes(pngBytes),
-            Content.Text(prompt),
-        ))
-        runInference("IMAGE", contents, prompt)
     }
 
-    private fun doAudioInference() {
-        val prompt = "Listen to this audio and describe what the person is saying."
-        val audioBytes = File(TEST_AUDIO_PATH).readBytes()
-        appendOutput("Audio loaded: ${audioBytes.size} bytes")
-        val contents = Contents.of(listOf(
-            Content.AudioBytes(audioBytes),
-            Content.Text(prompt),
-        ))
-        runInference("AUDIO", contents, prompt)
+    private fun stopAudioRecording() {
+        isRecording = false
     }
 
     // ---- Inference runner (shared) -------------------------------------------
@@ -350,6 +556,11 @@ class TriageTestActivity : Activity() {
         btnText.isEnabled = enabled
         btnImage.isEnabled = enabled
         btnAudio.isEnabled = enabled
+        btnCapture.isEnabled = enabled
+    }
+
+    private fun setButtonsEnabled(button: Button, enabled: Boolean) {
+        button.isEnabled = enabled
     }
 
     private fun scaleBitmap(bitmap: Bitmap, maxEdge: Int): Bitmap {
@@ -364,5 +575,40 @@ class TriageTestActivity : Activity() {
         val stream = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
         return stream.toByteArray()
+    }
+
+    /** Build a WAV file from raw PCM bytes (16-bit mono). */
+    private fun buildWav(pcmData: ByteArray, sampleRate: Int): ByteArray {
+        val channels = 1
+        val bitsPerSample = 16
+        val byteRate = sampleRate * channels * bitsPerSample / 8
+        val blockAlign = channels * bitsPerSample / 8
+        val dataSize = pcmData.size
+        val fileSize = 36 + dataSize
+
+        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
+            // RIFF header
+            put('R'.code.toByte()); put('I'.code.toByte())
+            put('F'.code.toByte()); put('F'.code.toByte())
+            putInt(fileSize)
+            put('W'.code.toByte()); put('A'.code.toByte())
+            put('V'.code.toByte()); put('E'.code.toByte())
+            // fmt chunk
+            put('f'.code.toByte()); put('m'.code.toByte())
+            put('t'.code.toByte()); put(' '.code.toByte())
+            putInt(16)                          // chunk size
+            putShort(1)                         // PCM format
+            putShort(channels.toShort())
+            putInt(sampleRate)
+            putInt(byteRate)
+            putShort(blockAlign.toShort())
+            putShort(bitsPerSample.toShort())
+            // data chunk
+            put('d'.code.toByte()); put('a'.code.toByte())
+            put('t'.code.toByte()); put('a'.code.toByte())
+            putInt(dataSize)
+        }
+
+        return header.array() + pcmData
     }
 }

@@ -66,10 +66,10 @@
           recreate the activity when UI mode changes (e.g. setting dark mode).
           Instead, just recompose the view.
          -->
-        <!-- Field Medic test harness — kept for ML backend testing, not the launcher -->
+        <!-- Field Medic test harness — kept for ML backend testing -->
         <activity
             android:name="com.google.ai.edge.gallery.TriageTestActivity"
-            android:exported="false"
+            android:exported="true"
             android:screenOrientation="portrait"
             android:theme="@android:style/Theme.Material.Light"
             tools:ignore="LockedOrientationActivity">

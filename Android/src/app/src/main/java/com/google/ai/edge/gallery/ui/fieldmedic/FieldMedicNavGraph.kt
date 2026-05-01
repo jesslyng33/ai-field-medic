@@ -11,6 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -67,6 +68,8 @@ fun FieldMedicNavHost(navController: NavHostController) {
     val medicalOnboardingDone = remember {
         prefs.getBoolean(PREF_MEDICAL_DONE, false)
     }
+
+    val fmViewModel: FieldMedicViewModel = viewModel()
 
     FieldMedicAppTheme {
         NavHost(
@@ -214,12 +217,14 @@ fun FieldMedicNavHost(navController: NavHostController) {
 
             composable(ROUTE_ASSESSMENT) {
                 AssessmentScreen(
+                    viewModel = fmViewModel,
                     onBack = { navController.navigateUp() },
                     onAnalyze = { navController.navigate(ROUTE_THINKING) }
                 )
             }
             composable(ROUTE_THINKING) {
                 ThinkingScreen(
+                    viewModel = fmViewModel,
                     onReady = {
                         navController.navigate(ROUTE_GUIDANCE) {
                             popUpTo(ROUTE_THINKING) { inclusive = true }
@@ -229,6 +234,7 @@ fun FieldMedicNavHost(navController: NavHostController) {
             }
             composable(ROUTE_GUIDANCE) {
                 GuidanceScreen(
+                    viewModel = fmViewModel,
                     onEndSession = { navController.navigate(ROUTE_SUMMARY) }
                 )
             }
