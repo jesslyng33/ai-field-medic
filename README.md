@@ -1,87 +1,78 @@
-# Google AI Edge Gallery ✨
+# AI Field Medic
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/google-ai-edge/gallery)](https://github.com/google-ai-edge/gallery/releases)
 
-**Explore, Experience, and Evaluate the Future of On-Device Generative AI with Google AI Edge.**
+An on-device Android app that guides users through emergency medical triage using local LLMs — no internet required. Built on top of [Google AI Edge Gallery](https://github.com/google-ai-edge/gallery).
 
-AI Edge Gallery is the premier destination for running the world's most powerful open-source Large Language Models (LLMs) on your mobile device. Experience high-performance Generative AI directly on your hardware—fully offline, private, and lightning-fast.
+The app captures user context (vitals, medical history), runs a voice-driven triage loop with on-device speech recognition and TTS, and uses a vision model to describe wounds from camera input. All inference runs locally for privacy and offline use.
 
-**Now Featuring: Gemma 4**
+## Team
 
-The latest version brings official support for the newly released Gemma 4 family. As the centerpiece of this release, Gemma 4 allows you to test the cutting edge of on-device AI. Experience advanced reasoning, logic, and creative capabilities without ever sending your data to a server.
+| Name | Email |
+| --- | --- |
+| Emma Shen | emmaxshen@berkeley.edu |
+| Jesslyn Gunadi | jesslyngunadi@berkeley.edu |
+| Aaron Nguyen | airrock85@berkeley.edu |
+| Tyler Sales | tylerdsales@berkeley.edu |
 
+## Setup
 
-| **Install the app today from Google Play** | **Install the app today from App Store** |
-| :--- | :--- |
-| <a href='https://play.google.com/store/apps/details?id=com.google.ai.edge.gallery'><img alt='Get it on Google Play' height="120" src='https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png'/></a> | <a href="https://apps.apple.com/us/app/google-ai-edge-gallery/id6749645337?itscg=30200&itsct=apps_box_badge&mttnsubad=6749645337" style="display: inline-block;"> <img src="https://toolbox.marketingtools.apple.com/api/v2/badges/download-on-the-app-store/black/en-us?releaseDate=1771977600" alt="Download on the App Store" style="width: 246px; height: 90px; vertical-align: middle; object-fit: contain;" /></a> |
+### Prerequisites
 
-For users without Google Play access, install the apk from the [**latest release**](https://github.com/google-ai-edge/gallery/releases/latest/)
+- **Android Studio** (Ladybug or newer)
+- **JDK 17**
+- **Android SDK 34+** with an Android 12+ device or emulator
+- A **Hugging Face account** (required to download models inside the app)
+- A **Hugging Face OAuth application** ([create one here](https://huggingface.co/docs/hub/oauth#creating-an-oauth-app))
 
+### Steps
 
-## App Preview
+1. **Clone the repo**
+   ```bash
+   git clone https://github.com/jesslyng33/ai-field-medic.git
+   cd ai-field-medic
+   ```
 
-<img width="480" alt="01" src="https://github.com/user-attachments/assets/a809ad78-aef4-4169-91ee-de7213cbb3bd" />
-<img width="480" alt="02" src="https://github.com/user-attachments/assets/1effd10d-f45a-4f7b-9435-f50f1bdd36b6" />
-<img width="480" alt="03" src="https://github.com/user-attachments/assets/e5089e41-2c18-4fbe-9011-ebe9e5a02044" />
-<img width="480" alt="04" src="https://github.com/user-attachments/assets/0f39d3ed-7403-4606-a7c6-b2c7e51ba6c1" />
-<img width="480" alt="05" src="https://github.com/user-attachments/assets/8c229e96-b598-4735-9f60-e96907e1d5d5" />
-<img width="480" alt="06" src="https://github.com/user-attachments/assets/ac9fb77b-81de-4197-9ed3-f6fe58290b3e" />
-<img width="480" alt="07" src="https://github.com/user-attachments/assets/bc86ba07-2eaf-49b1-980f-8a87a85c596f" />
-<img width="480" alt="08" src="https://github.com/user-attachments/assets/061564ed-030f-4630-810b-13a7863fce4c" />
+2. **Open in Android Studio**
 
-## ✨ Core Features
+   Open the `Android/src` directory as the project root. Let Gradle sync and download dependencies.
 
-* **Agent Skills**: Transform your LLM from a conversationalist into a proactive assistant. Use the Agent Skills tile to augment model capabilities with tools like Wikipedia for fact-grounding, interactive maps, and rich visual summary cards. You can even load modular skills from a URL or browse community contributions on GitHub Discussions.
+3. **Configure Hugging Face OAuth**
 
-* **AI Chat with Thinking Mode**: Engage in fluid, multi-turn conversations and toggle the new Thinking Mode to peek "under the hood." This feature allows you to see the model’s step-by-step reasoning process, which is perfect for understanding complex problem-solving. Note: Thinking Mode currently works with supported models, starting with the Gemma 4 family.
+   In `Android/src/app/src/main/java/com/google/ai/edge/gallery/common/ProjectConfig.kt`, replace the placeholders:
+   ```kotlin
+   const val clientId = "<your-hf-client-id>"
+   const val redirectUri = "<your-hf-redirect-uri>"
+   ```
 
-* **Ask Image**: Use multimodal power to identify objects, solve visual puzzles, or get detailed descriptions using your device’s camera or photo gallery.
+   In `Android/src/app/build.gradle.kts`, update the redirect scheme to match:
+   ```kotlin
+   manifestPlaceholders["appAuthRedirectScheme"] = "<your-scheme>"
+   ```
 
-* **Audio Scribe**: Transcribe and translate voice recordings into text in real-time using high-efficiency on-device language models.
+4. **Build**
+   ```bash
+   cd Android/src
+   ./gradlew assembleDebug
+   ```
+   Or use **Run ▸ Run 'app'** in Android Studio.
 
-* **Prompt Lab**: A dedicated workspace to test different prompts and single-turn use cases with granular control over model parameters like temperature and top-k.
+## Run & Usage
 
-* **Mobile Actions**: Unlock offline device controls and automated tasks powered entirely by a finetune of FuntionGemma 270m.
+1. **Install** the debug APK on a physical device (recommended; emulator works but is slower for inference) or run directly from Android Studio.
 
-* **Tiny Garden**: A fun, experimental mini-game that uses natural language to plant and harvest a virtual garden using a finetune of FunctionGemma 270m.
+2. **First launch — onboarding**: sign in with Hugging Face and complete the trip/profile setup (location, group size, medical history, vitals).
 
-* **Model Management & Benchmark**: Gallery is a flexible sandbox for a wide variety of open-source models. Easily download models from the list or load your own custom models. Manage your model library effortlessly and run benchmark tests to understand exactly how each model performs on your specific hardware.
+3. **Download a model**: from the home screen, pick a model (e.g. Gemma family) and download it. Models are cached on-device.
 
-* **100% On-Device Privacy**: All model inferences happen directly on your device hardware. No internet is required, ensuring total privacy for your prompts, images, and sensitive data.
+4. **Start a triage session**: tap the triage tile and speak naturally. The app uses voice activity detection to know when you're done talking, then responds with on-device TTS guidance.
 
-## 🏁 Get Started in Minutes!
+5. **Wound describer**: point the camera at an injury — the vision model returns a structured description that feeds into the triage loop.
 
-1. **Check OS Requirement**: Android 12 and up, and iOS 17 and up.
-2.  **Download the App:**
-    - Install the app from [Google Play](https://play.google.com/store/apps/details?id=com.google.ai.edge.gallery) or [App Store](https://apps.apple.com/us/app/google-ai-edge-gallery/id6749645337).
-    - For users without Google Play access: install the apk from the [**latest release**](https://github.com/google-ai-edge/gallery/releases/latest/)
-3.  **Install & Explore:** For detailed installation instructions (including for corporate devices) and a full user guide, head over to our [**Project Wiki**](https://github.com/google-ai-edge/gallery/wiki)!
+6. **Review**: see the assessment summary and recommended next steps.
 
-## 🛠️ Technology Highlights
+All inference is fully on-device. No data leaves the phone.
 
-*   **Google AI Edge:** Core APIs and tools for on-device ML.
-*   **LiteRT:** Lightweight runtime for optimized model execution.
-*   **Hugging Face Integration:** For model discovery and download.
+## License
 
-## ⌨️ Development
-
-Check out the [development notes](DEVELOPMENT.md) for instructions about how to build the app locally.
-
-## 🤝 Feedback
-
-This is an **experimental Beta release**, and your input is crucial!
-
-*   🐞 **Found a bug?** [Report it here!](https://github.com/google-ai-edge/gallery/issues/new?assignees=&labels=bug&template=bug_report.md&title=%5BBUG%5D)
-*   💡 **Have an idea?** [Suggest a feature!](https://github.com/google-ai-edge/gallery/issues/new?assignees=&labels=enhancement&template=feature_request.md&title=%5BFEATURE%5D)
-
-## 📄 License
-
-Licensed under the Apache License, Version 2.0. See the [LICENSE](LICENSE) file for details.
-
-## 🔗 Useful Links
-
-*   [**Project Wiki (Detailed Guides)**](https://github.com/google-ai-edge/gallery/wiki)
-*   [Hugging Face LiteRT Community](https://huggingface.co/litert-community)
-*   [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM)
-*   [Google AI Edge Documentation](https://ai.google.dev/edge)
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
