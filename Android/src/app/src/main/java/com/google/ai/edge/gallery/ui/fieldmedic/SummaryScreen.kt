@@ -1,7 +1,10 @@
 package com.google.ai.edge.gallery.ui.fieldmedic
 
+import android.content.Intent
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,36 +23,49 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import com.google.ai.edge.gallery.ui.theme.appFontFamily
-
-private val ACTIONS_TAKEN = listOf(
-    "Applied direct pressure with clean cloth",
-    "Elevated injured limb above heart level",
-    "Monitored for signs of shock",
-    "Applied tourniquet at 14:32 — noted time",
-    "Kept patient warm with emergency blanket",
-    "Activated personal locator beacon",
-)
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @Composable
-fun SummaryScreen(onNewSession: () -> Unit) {
+fun SummaryScreen(
+    report: SessionReport?,
+    onNewSession: () -> Unit,
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var isGeneratingPdf by remember { mutableStateOf(false) }
+    var logExpanded by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -99,101 +115,212 @@ fun SummaryScreen(onNewSession: () -> Unit) {
         HorizontalDivider(color = FMDivider)
         Spacer(Modifier.height(28.dp))
 
-        // Injury details card
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(FMSurface, RoundedCornerShape(16.dp))
-                .border(1.dp, FMBorder, RoundedCornerShape(16.dp))
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            SummaryRow(label = "INJURY TYPE", value = "Laceration — lower left forearm")
-            SummaryRow(label = "SEVERITY", value = "Moderate — arterial bleeding suspected")
-            SummaryRow(label = "SESSION START", value = "14:18 local time")
-            SummaryRow(label = "DURATION", value = "22 minutes")
-            SummaryRow(label = "LOCATION", value = "Rocky Mtn. National Park, CO")
-            SummaryRow(label = "TRAVELER STATUS", value = "Solo")
-        }
-
-        Spacer(Modifier.height(28.dp))
-
-        // Alert banner
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(FMRed.copy(alpha = 0.1f), RoundedCornerShape(12.dp))
-                .border(1.dp, FMRed.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Icon(
-                Icons.Filled.Add,
-                contentDescription = null,
-                tint = FMRed,
-                modifier = Modifier.size(20.dp),
-            )
-            Text(
-                "Seek emergency care within 4 hours. Tourniquet was applied — do not remove.",
-                color = FMRed,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                fontFamily = appFontFamily,
-                lineHeight = 18.sp,
-                modifier = Modifier.weight(1f),
-            )
-        }
-
-        Spacer(Modifier.height(28.dp))
-
-        // Actions taken
-        FMSectionLabel("ACTIONS TAKEN")
-        Spacer(Modifier.height(14.dp))
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            ACTIONS_TAKEN.forEach { action ->
-                Row(
-                    verticalAlignment = Alignment.Top,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Icon(
-                        Icons.Filled.CheckCircle,
-                        contentDescription = null,
-                        tint = FMGreenBright,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Text(
-                        action,
-                        color = FMText,
-                        fontSize = 14.sp,
-                        fontFamily = appFontFamily,
-                        lineHeight = 20.sp,
+        if (report != null) {
+            // --- Session details card ---
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(FMSurface, RoundedCornerShape(16.dp))
+                    .border(1.dp, FMBorder, RoundedCornerShape(16.dp))
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                SummaryRow(label = "PATIENT", value = report.patientName)
+                SummaryRow(label = "SESSION START", value = report.startTimeFormatted)
+                SummaryRow(label = "DURATION", value = report.durationFormatted)
+                SummaryRow(
+                    label = "LOCATION",
+                    value = report.location.ifBlank { "Not specified" },
+                )
+                SummaryRow(
+                    label = "TRAVELER STATUS",
+                    value = if (report.soloTraveler) "Solo" else "With group",
+                )
+                if (report.firstAidKit.isNotEmpty()) {
+                    SummaryRow(
+                        label = "FIRST AID KIT",
+                        value = report.firstAidKit.joinToString(", "),
                     )
                 }
+            }
+
+            Spacer(Modifier.height(28.dp))
+
+            // --- AI Summary ---
+            FMSectionLabel("AI INCIDENT SUMMARY")
+            Spacer(Modifier.height(14.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(FMSurface, RoundedCornerShape(16.dp))
+                    .border(1.dp, FMBorder, RoundedCornerShape(16.dp))
+                    .padding(20.dp),
+            ) {
+                Text(
+                    report.aiSummary,
+                    color = FMText,
+                    fontSize = 14.sp,
+                    fontFamily = appFontFamily,
+                    lineHeight = 22.sp,
+                )
+            }
+
+            // --- Conversation log (expandable) ---
+            if (report.conversationLog.isNotEmpty()) {
+                Spacer(Modifier.height(28.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { logExpanded = !logExpanded }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    FMSectionLabel("CONVERSATION LOG (${report.conversationLog.count { it.role != TriageRole.SYSTEM }})")
+                    Icon(
+                        if (logExpanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                        contentDescription = if (logExpanded) "Collapse" else "Expand",
+                        tint = FMTextSub,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .animateContentSize(),
+                ) {
+                    if (logExpanded) {
+                        val timeFmt = remember {
+                            SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                        }
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(FMSurface, RoundedCornerShape(16.dp))
+                                .border(1.dp, FMBorder, RoundedCornerShape(16.dp))
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            report.conversationLog
+                                .filter { it.role != TriageRole.SYSTEM }
+                                .forEach { msg ->
+                                    val isUser = msg.role == TriageRole.USER
+                                    Column {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Text(
+                                                if (isUser) "PATIENT" else "MEDIC",
+                                                color = if (isUser) FMGreenBright else FMTextSub,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = appFontFamily,
+                                                letterSpacing = 1.sp,
+                                            )
+                                            Text(
+                                                timeFmt.format(Date(msg.timestamp)),
+                                                color = FMTextSub.copy(alpha = 0.6f),
+                                                fontSize = 9.sp,
+                                                fontFamily = appFontFamily,
+                                            )
+                                        }
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(
+                                            msg.content,
+                                            color = FMText,
+                                            fontSize = 13.sp,
+                                            fontFamily = appFontFamily,
+                                            lineHeight = 19.sp,
+                                        )
+                                    }
+                                }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Fallback if no report data
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(FMSurface, RoundedCornerShape(16.dp))
+                    .border(1.dp, FMBorder, RoundedCornerShape(16.dp))
+                    .padding(20.dp),
+            ) {
+                Text(
+                    "Session data unavailable.",
+                    color = FMTextSub,
+                    fontSize = 14.sp,
+                    fontFamily = appFontFamily,
+                )
             }
         }
 
         Spacer(Modifier.height(44.dp))
 
-        // Share button
+        // Share / export PDF button
         Button(
-            onClick = { /* share intent — not wired to backend */ },
+            onClick = {
+                if (report == null || isGeneratingPdf) return@Button
+                isGeneratingPdf = true
+                scope.launch {
+                    val file = withContext(Dispatchers.IO) {
+                        PdfReportGenerator.generate(context, report)
+                    }
+                    isGeneratingPdf = false
+                    val uri = FileProvider.getUriForFile(
+                        context,
+                        "${context.packageName}.provider",
+                        file,
+                    )
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = "application/pdf"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        putExtra(Intent.EXTRA_SUBJECT, "Field Medic Incident Report")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(shareIntent, "Share Report"))
+                }
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(60.dp),
             colors = ButtonDefaults.buttonColors(containerColor = FMGreen),
             shape = RoundedCornerShape(14.dp),
+            enabled = report != null && !isGeneratingPdf,
         ) {
-            Icon(Icons.Filled.Share, contentDescription = null, tint = Color.White)
-            Spacer(Modifier.width(10.dp))
-            Text(
-                "SHARE WITH EMERGENCY SERVICES",
-                color = Color.White,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = appFontFamily,
-                letterSpacing = 1.sp,
-            )
+            if (isGeneratingPdf) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = Color.White,
+                    strokeWidth = 2.dp,
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "GENERATING PDF...",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = appFontFamily,
+                    letterSpacing = 1.sp,
+                )
+            } else {
+                Icon(Icons.Filled.Share, contentDescription = null, tint = Color.White)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "EXPORT & SHARE PDF",
+                    color = Color.White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = appFontFamily,
+                    letterSpacing = 1.sp,
+                )
+            }
         }
 
         Spacer(Modifier.height(12.dp))

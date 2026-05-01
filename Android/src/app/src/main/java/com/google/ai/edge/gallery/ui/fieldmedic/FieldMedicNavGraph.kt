@@ -8,6 +8,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -265,15 +268,24 @@ fun FieldMedicNavHost(navController: NavHostController) {
 
             composable(ROUTE_TRIAGE_LOOP) {
                 val triageVm: TriageLoopViewModel = viewModel()
+                val sessionReady by triageVm.sessionReady.collectAsState()
+
+                LaunchedEffect(sessionReady) {
+                    if (sessionReady) {
+                        navController.navigate(ROUTE_SUMMARY)
+                    }
+                }
+
                 TriageLoopScreen(
                     viewModel = triageVm,
                     onExit = { navController.navigateUp() },
-                    onEndSession = { navController.navigate(ROUTE_SUMMARY) },
+                    onEndSession = { triageVm.endSession() },
                 )
             }
 
             composable(ROUTE_SUMMARY) {
                 SummaryScreen(
+                    report = AssessmentData.sessionReport,
                     onNewSession = {
                         navController.navigate(ROUTE_ONBOARDING_TRIP) {
                             popUpTo(0) { inclusive = true }
