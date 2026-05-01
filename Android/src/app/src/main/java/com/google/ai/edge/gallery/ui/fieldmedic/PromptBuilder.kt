@@ -6,6 +6,12 @@ package com.google.ai.edge.gallery.ui.fieldmedic
  */
 fun buildPrompt(hasAudio: Boolean, hasImage: Boolean, hasText: Boolean): String {
     val sb = StringBuilder()
+
+    AssessmentData.userContext?.let { ctx ->
+        sb.appendLine(ctx.toContextBlock())
+        sb.appendLine()
+    }
+
     sb.appendLine("You are a medical triage classifier.")
     sb.appendLine("A person is describing an injury or emergency situation.")
     sb.appendLine()
@@ -15,19 +21,14 @@ fun buildPrompt(hasAudio: Boolean, hasImage: Boolean, hasText: Boolean): String 
     if (hasText) sb.appendLine("They typed: \"${AssessmentData.notes}\"")
 
     sb.appendLine()
-    sb.appendLine("Classify this situation into a JSON object with EXACTLY this format:")
+    sb.appendLine("Using the patient's medical record above, classify this situation into a JSON object with EXACTLY this format:")
     sb.appendLine("""
 {
   "injury": "<type of injury, e.g. laceration, fracture, burn, choking>",
   "severity": "<RED, YELLOW, or GREEN>",
   "bodyPart": "<body part affected, e.g. left_forearm, right_leg, chest>",
-  "supplies": ["<any visible or mentioned supplies, e.g. cloth, tourniquet, bandage>"],
-  "userProfile": {
-    "bloodType": "${AssessmentData.bloodType.ifBlank { "unknown" }}",
-    "allergies": [${formatList(AssessmentData.allergies)}],
-    "medications": [${formatList(AssessmentData.medications)}],
-    "conditions": [${formatList(AssessmentData.conditions)}]
-  }
+  "supplies": ["<items available from the patient's first aid kit or visible in photo>"],
+  "considerations": ["<allergy/medication/condition factors relevant to treatment>"]
 }
     """.trimIndent())
 
@@ -41,17 +42,8 @@ fun buildPrompt(hasAudio: Boolean, hasImage: Boolean, hasText: Boolean): String 
     sb.appendLine("- Output ONLY the JSON object, no other text")
     sb.appendLine("- Use snake_case for bodyPart values")
     sb.appendLine("- If you cannot determine a field, use your best guess based on available information")
-    sb.appendLine("- The userProfile is pre-filled from the patient's records — include it exactly as shown")
-    sb.appendLine("- For supplies, list any items visible in the photo or mentioned in audio/text")
+    sb.appendLine("- Do NOT read or recite any part of the medical record to the user")
+    sb.appendLine("- For considerations, note allergies to common treatments, relevant conditions, or medications that affect care")
 
     return sb.toString()
-}
-
-/** Formats a comma-separated string into JSON array entries. */
-private fun formatList(input: String): String {
-    if (input.isBlank()) return ""
-    return input.split(",")
-        .map { it.trim() }
-        .filter { it.isNotEmpty() }
-        .joinToString(", ") { "\"$it\"" }
 }

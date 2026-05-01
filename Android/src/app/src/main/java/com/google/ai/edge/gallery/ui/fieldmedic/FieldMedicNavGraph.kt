@@ -176,10 +176,13 @@ fun FieldMedicNavHost(navController: NavHostController) {
             }
 
             composable(ROUTE_ONBOARDING_TRIP) {
+                val userContextVm: UserContextViewModel = hiltViewModel()
                 OnboardingTripScreen(
-                    onReady = {
-                        navController.navigate(ROUTE_HOME) {
-                            popUpTo(ROUTE_ONBOARDING_TRIP) { inclusive = true }
+                    onReady = { location, soloTraveler, firstAidKit ->
+                        userContextVm.loadContext(location, soloTraveler, firstAidKit) {
+                            navController.navigate(ROUTE_HOME) {
+                                popUpTo(ROUTE_ONBOARDING_TRIP) { inclusive = true }
+                            }
                         }
                     }
                 )

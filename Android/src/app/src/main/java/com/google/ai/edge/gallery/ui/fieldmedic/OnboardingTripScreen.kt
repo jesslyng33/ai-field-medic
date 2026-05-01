@@ -59,7 +59,7 @@ private val FIRST_AID_ITEMS = listOf(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun OnboardingTripScreen(onReady: () -> Unit) {
+fun OnboardingTripScreen(onReady: (location: String, soloTraveler: Boolean, firstAidKit: Set<String>) -> Unit) {
     var location by remember { mutableStateOf("") }
     var soloTraveler by remember { mutableStateOf(true) }
     val checkedItems = remember {
@@ -208,7 +208,11 @@ fun OnboardingTripScreen(onReady: () -> Unit) {
 
         Spacer(Modifier.height(44.dp))
 
-        FMPrimaryButton("I'M READY", onClick = onReady, color = FMRed)
+        FMPrimaryButton(
+            "I'M READY",
+            onClick = { onReady(location, soloTraveler, checkedItems.value) },
+            color = FMRed,
+        )
 
         Spacer(Modifier.height(32.dp))
         Spacer(Modifier.navigationBarsPadding())
