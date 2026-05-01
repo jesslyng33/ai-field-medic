@@ -4,9 +4,11 @@ import android.app.Activity
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -135,6 +137,32 @@ fun FMPrimaryButton(
         Text(
             text = text,
             color = FMText,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = appFontFamily,
+            letterSpacing = 2.sp,
+        )
+    }
+}
+
+@Composable
+fun FMGhostButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier
+            .fillMaxWidth()
+            .height(60.dp),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = FMTextSub),
+        border = BorderStroke(1.dp, FMBorder),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text(
+            text = text,
+            color = FMTextSub,
             fontSize = 15.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = appFontFamily,

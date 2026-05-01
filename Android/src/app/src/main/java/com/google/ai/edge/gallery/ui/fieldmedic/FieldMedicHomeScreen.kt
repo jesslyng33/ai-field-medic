@@ -21,7 +21,9 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -35,7 +37,7 @@ import androidx.compose.ui.unit.sp
 import com.google.ai.edge.gallery.ui.theme.appFontFamily
 
 @Composable
-fun FieldMedicHomeScreen(onGetHelp: () -> Unit) {
+fun FieldMedicHomeScreen(onGetHelp: () -> Unit, onSettings: () -> Unit = {}) {
     val pulse = rememberInfiniteTransition(label = "pulse")
     val pulseScale by pulse.animateFloat(
         initialValue = 1f,
@@ -56,10 +58,26 @@ fun FieldMedicHomeScreen(onGetHelp: () -> Unit) {
         label = "pulseAlpha",
     )
 
+    Box(modifier = Modifier.fillMaxSize().background(FMBackground)) {
+    IconButton(
+        onClick = onSettings,
+        modifier = Modifier
+            .statusBarsPadding()
+            .padding(top = 8.dp, end = 8.dp)
+            .size(60.dp)
+            .align(Alignment.TopEnd),
+    ) {
+        Icon(
+            Icons.Filled.Settings,
+            contentDescription = "Settings",
+            tint = FMTextSub,
+            modifier = Modifier.size(28.dp),
+        )
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(FMBackground)
             .statusBarsPadding()
             .navigationBarsPadding()
             .padding(horizontal = 32.dp),
@@ -183,5 +201,6 @@ fun FieldMedicHomeScreen(onGetHelp: () -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+    }
     }
 }
