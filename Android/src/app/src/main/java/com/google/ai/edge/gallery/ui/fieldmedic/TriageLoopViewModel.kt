@@ -74,6 +74,14 @@ enum class CameraFacing { BACK, FRONT }
 
 enum class LoopActivity { LISTENING, SPEAKING, PROCESSING, IDLE }
 
+enum class TriageRole { USER, ASSISTANT, SYSTEM }
+
+data class TriageMessage(
+    val role: TriageRole,
+    val content: String,
+    val timestamp: Long = System.currentTimeMillis(),
+)
+
 sealed class TriageTurn {
     data class TouchTurn(val input: String) : TriageTurn()
 }
@@ -114,6 +122,15 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening
 
+    // Full conversation log — used for the post-crisis summary
+    private val _conversationLog = MutableStateFlow<List<TriageMessage>>(emptyList())
+    val conversationLog: StateFlow<List<TriageMessage>> = _conversationLog
+
+    private fun logMessage(role: TriageRole, content: String) {
+        if (content.isBlank()) return
+        _conversationLog.value = _conversationLog.value + TriageMessage(role, content)
+    }
+
     // --- Internal ---
     private var engine: Engine? = null
     private var conversation: Conversation? = null
@@ -148,6 +165,7 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                 sendTurn(listOf(Content.Text(SYSTEM_PROMPT)))
                 _currentPrompt.value = OPENING_LINE
                 ttsManager.speak(OPENING_LINE)
+                logMessage(TriageRole.ASSISTANT, OPENING_LINE)
             } catch (e: Exception) {
                 Log.e(TAG, "Engine init failed", e)
                 _currentPrompt.value = "Error: ${e.message}"
@@ -290,15 +308,20 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                     contents.add(Content.ImageBytes(bitmapToPng(frame)))
                     contents.add(Content.Text("[Visual context: $desc]"))
                     latestFrameBitmap = null
+                    logMessage(TriageRole.SYSTEM, "Visual: $desc")
                 }
 
                 when (turn) {
-                    is TriageTurn.TouchTurn -> contents.add(Content.Text(turn.input))
+                    is TriageTurn.TouchTurn -> {
+                        contents.add(Content.Text(turn.input))
+                        logMessage(TriageRole.USER, turn.input)
+                    }
                 }
 
                 val response = sendTurn(contents)
                 _currentPrompt.value = response
                 ttsManager.speak(response)
+                logMessage(TriageRole.ASSISTANT, response)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -342,6 +365,45 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                 latestFrameBitmap = scaled
                 latestVlmDesc = desc
             }
+        }
+    }
+
+    // --- Summary ---
+
+    /**
+     * Asks Gemma to summarize the full conversation log into a short incident report.
+     * Safe to call after the triage session ends. Returns the summary text.
+     */
+    suspend fun generateSummary(): String {
+        val log = _conversationLog.value
+        if (log.isEmpty()) return "No conversation recorded."
+
+        val transcript = log.joinToString("\n") { msg ->
+            when (msg.role) {
+                TriageRole.USER -> "PATIENT: ${msg.content}"
+                TriageRole.ASSISTANT -> "MEDIC: ${msg.content}"
+                TriageRole.SYSTEM -> "[${msg.content}]"
+            }
+        }
+
+        val prompt = """
+You are now writing a post-incident medical report. Forget the dispatcher role.
+
+Summarize this emergency triage conversation as a brief medical incident report.
+Include: type of injury, severity, body location, key symptoms, actions taken, and final status.
+Use plain prose, under 120 words. Do NOT ask any questions.
+
+Transcript:
+$transcript
+
+Report:
+        """.trimIndent()
+
+        return try {
+            sendTurn(listOf(Content.Text(prompt)))
+        } catch (e: Exception) {
+            Log.e(TAG, "Summary generation failed", e)
+            "Summary unavailable: ${e.message}"
         }
     }
 
