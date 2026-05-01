@@ -25,7 +25,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -89,6 +93,7 @@ fun TriageLoopScreen(
 
     val currentPrompt by viewModel.currentPrompt.collectAsState()
     val userTranscript by viewModel.userTranscript.collectAsState()
+    val conversationLog by viewModel.conversationLog.collectAsState()
     val vlmDescription by viewModel.vlmDescription.collectAsState()
     val isMuted by viewModel.isMuted.collectAsState()
     val isFlashOn by viewModel.isFlashOn.collectAsState()
@@ -307,48 +312,15 @@ fun TriageLoopScreen(
             }
             Spacer(Modifier.height(16.dp))
 
-            // Current prompt (main instruction)
-            Box(
+            // Chat history bubbles
+            ChatHistory(
+                messages = conversationLog,
+                livePartialTranscript = userTranscript,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .background(
-                        Color.Black.copy(alpha = 0.7f),
-                        RoundedCornerShape(16.dp),
-                    )
-                    .padding(20.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = currentPrompt,
-                    color = FMText,
-                    fontSize = 22.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = appFontFamily,
-                    textAlign = TextAlign.Center,
-                    lineHeight = 30.sp,
-                )
-            }
-
-            // Transcript caption — shows what the user said
-            if (userTranscript.isNotBlank()) {
-                Spacer(Modifier.height(8.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = "\"$userTranscript\"",
-                        color = FMText.copy(alpha = 0.65f),
-                        fontSize = 14.sp,
-                        fontFamily = appFontFamily,
-                        textAlign = TextAlign.Center,
-                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
-                    )
-                }
-            }
+                    .heightIn(max = 280.dp)
+                    .padding(horizontal = 12.dp),
+            )
 
             Spacer(Modifier.height(16.dp))
 
@@ -364,7 +336,7 @@ fun TriageLoopScreen(
                     onClick = { viewModel.onYesPressed() },
                     modifier = Modifier
                         .weight(1f)
-                        .height(120.dp),
+                        .height(52.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = FMGreen,
@@ -373,10 +345,10 @@ fun TriageLoopScreen(
                 ) {
                     Text(
                         "YES",
-                        fontSize = 28.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.Black,
                         fontFamily = appFontFamily,
-                        letterSpacing = 3.sp,
+                        letterSpacing = 2.sp,
                     )
                 }
 
@@ -384,7 +356,7 @@ fun TriageLoopScreen(
                     onClick = { viewModel.onNoPressed() },
                     modifier = Modifier
                         .weight(1f)
-                        .height(120.dp),
+                        .height(52.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = IconButtonDefaults.filledIconButtonColors(
                         containerColor = FMRed,
@@ -393,10 +365,10 @@ fun TriageLoopScreen(
                 ) {
                     Text(
                         "NO",
-                        fontSize = 28.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.Black,
                         fontFamily = appFontFamily,
-                        letterSpacing = 3.sp,
+                        letterSpacing = 2.sp,
                     )
                 }
             }
@@ -464,6 +436,112 @@ private fun ActivityPill(activity: LoopActivity, modifier: Modifier = Modifier) 
             )
         }
     }
+}
+
+@Composable
+private fun ChatHistory(
+    messages: List<TriageMessage>,
+    livePartialTranscript: String,
+    modifier: Modifier = Modifier,
+) {
+    // Filter SYSTEM messages out of the chat view
+    val visible = remember(messages) {
+        messages.filter { it.role != TriageRole.SYSTEM }
+    }
+    val listState = rememberLazyListState()
+
+    // Auto-scroll to the latest message when the count changes
+    LaunchedEffect(visible.size, livePartialTranscript) {
+        val lastIndex = visible.size + (if (livePartialTranscript.isNotBlank()) 1 else 0) - 1
+        if (lastIndex >= 0) listState.animateScrollToItem(lastIndex)
+    }
+
+    LazyColumn(
+        state = listState,
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        items(visible) { msg ->
+            ChatBubble(
+                role = msg.role,
+                text = formatMessageContent(msg.role, msg.content),
+                isLive = false,
+            )
+        }
+        if (livePartialTranscript.isNotBlank()) {
+            item {
+                ChatBubble(
+                    role = TriageRole.USER,
+                    text = livePartialTranscript,
+                    isLive = true,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatBubble(
+    role: TriageRole,
+    text: String,
+    isLive: Boolean,
+) {
+    val isUser = role == TriageRole.USER
+    val alignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
+    val bubbleColor = if (isUser) FMGreen.copy(alpha = 0.85f)
+                      else Color.Black.copy(alpha = 0.75f)
+    val label = if (isUser) "You" else "Medic"
+
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = alignment) {
+        Column(
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
+            modifier = Modifier
+                .fillMaxWidth(0.78f)
+                .padding(horizontal = 4.dp),
+        ) {
+            Text(
+                text = label,
+                color = FMText.copy(alpha = 0.55f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = appFontFamily,
+                letterSpacing = 1.sp,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+            )
+            Box(
+                modifier = Modifier
+                    .background(bubbleColor, RoundedCornerShape(14.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    text = text,
+                    color = FMText.copy(alpha = if (isLive) 0.65f else 1f),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    fontFamily = appFontFamily,
+                    fontStyle = if (isLive) androidx.compose.ui.text.font.FontStyle.Italic
+                                else androidx.compose.ui.text.font.FontStyle.Normal,
+                    lineHeight = 18.sp,
+                )
+            }
+        }
+    }
+}
+
+// Cleans up the raw log content for display in chat bubbles.
+private fun formatMessageContent(role: TriageRole, content: String): String {
+    if (role != TriageRole.USER) return content
+    // "User said: \"foo\"" → "foo"
+    val saidPrefix = "User said: \""
+    if (content.startsWith(saidPrefix) && content.endsWith("\"")) {
+        return content.removePrefix(saidPrefix).removeSuffix("\"")
+    }
+    // "User pressed YES" → "YES"
+    val pressedPrefix = "User pressed "
+    if (content.startsWith(pressedPrefix)) {
+        return content.removePrefix(pressedPrefix)
+    }
+    return content
 }
 
 @Composable
