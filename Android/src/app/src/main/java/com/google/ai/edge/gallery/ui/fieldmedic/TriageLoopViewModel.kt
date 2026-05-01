@@ -45,29 +45,32 @@ private const val MODEL_PATH = "/data/local/tmp/gemma-4-E2B-it.litertlm"
 private const val SAMPLE_RATE = 16000
 private const val AUDIO_CHUNK_SEC = 7
 private const val FRAME_INTERVAL_MS = 5000L
+// RMS below this = silence. 16-bit PCM max is 32767; speech is typically 1000+.
+private const val SILENCE_RMS_THRESHOLD = 500
+private const val OPENING_LINE = "What's your emergency?"
 
 private val SYSTEM_PROMPT = """
 You are an emergency field medic dispatcher guiding a person through treating an injury in a remote location with no medical help available.
 
 CRITICAL RULES:
-- Every question MUST be strictly binary: either "yes / no" OR "option 1 / option 2".
+- Every question MUST be answerable with yes or no.
+- NEVER append "YES or NO", "yes or no", "Yes or No", or any variation to the end of a sentence. This is forbidden. End the question with a question mark only.
 - NEVER ask open-ended questions. NEVER ask "what" or "how" or "describe".
-- Phrase questions so they can be answered by tapping YES or NO.
 - Examples of GOOD questions:
-  * "Is there bleeding? YES or NO"
-  * "Is the person conscious? YES or NO"
-  * "Is the wound on an arm or a leg? Option 1: arm. Option 2: leg."
+  * "Is there bleeding?"
+  * "Is the person conscious?"
+  * "Is the wound on the arm?"
 - Examples of BAD questions (NEVER ask these):
   * "What happened?"
   * "Where is the injury?"
   * "Can you describe the wound?"
 - Ask ONE question at a time.
-- Keep each response to ONE short sentence plus the YES/NO or option choice.
+- Keep each response to ONE short sentence.
 - Use simple, direct language.
 - If you receive audio, listen to what the person said and ask the next binary question.
 - If you receive an image, assess the visible injury and ask the next binary question.
 - If the user presses YES or NO, incorporate it and ask the next binary question.
-- Start by asking a binary question to narrow down the situation, e.g. "Is the person conscious? YES or NO."
+- Start by asking a binary question to narrow down the situation, e.g. "Is the person conscious?"
 """.trimIndent()
 
 enum class LoopState { INITIALIZING, RUNNING, ERROR }
@@ -155,10 +158,10 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                 initEngine()
                 _loopState.value = LoopState.RUNNING
 
-                // Send initial prompt to get Gemma's first question
-                val firstResponse = sendTurn(listOf(Content.Text(SYSTEM_PROMPT)))
-                _currentPrompt.value = firstResponse
-                ttsManager.speak(firstResponse)
+                // Prime conversation with system context, then use hardcoded opening
+                sendTurn(listOf(Content.Text(SYSTEM_PROMPT)))
+                _currentPrompt.value = OPENING_LINE
+                ttsManager.speak(OPENING_LINE)
             } catch (e: Exception) {
                 Log.e(TAG, "Engine init failed", e)
                 _currentPrompt.value = "Error: ${e.message}"
@@ -279,10 +282,14 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                 delay(200)
                 continue
             }
+            // Brief settle after TTS stops — lets the speaker echo die out
+            delay(300)
 
             val wavBytes = recordChunk()
-            if (wavBytes != null && wavBytes.size > 44) { // more than just header
+            if (wavBytes != null && hasMeaningfulAudio(wavBytes)) {
                 turnQueue.send(TriageTurn.AudioTurn(wavBytes))
+            } else if (wavBytes != null) {
+                Log.d(TAG, "Audio chunk dropped — silence")
             }
         }
     }
@@ -384,6 +391,25 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     // --- Helpers ---
+
+    // Returns true if the WAV chunk contains speech above the silence threshold.
+    // Strips the 44-byte WAV header then computes RMS of 16-bit PCM samples.
+    private fun hasMeaningfulAudio(wav: ByteArray): Boolean {
+        if (wav.size <= 44) return false
+        val pcm = wav.copyOfRange(44, wav.size)
+        val buf = ByteBuffer.wrap(pcm).order(ByteOrder.LITTLE_ENDIAN)
+        var sumSquares = 0.0
+        var count = 0
+        while (buf.remaining() >= 2) {
+            val sample = buf.short.toDouble()
+            sumSquares += sample * sample
+            count++
+        }
+        if (count == 0) return false
+        val rms = Math.sqrt(sumSquares / count)
+        Log.d(TAG, "Audio RMS: $rms")
+        return rms >= SILENCE_RMS_THRESHOLD
+    }
 
     private fun scaleBitmap(bitmap: Bitmap, maxEdge: Int): Bitmap {
         val w = bitmap.width
