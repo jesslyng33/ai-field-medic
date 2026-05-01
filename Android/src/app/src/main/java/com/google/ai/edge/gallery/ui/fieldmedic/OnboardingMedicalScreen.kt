@@ -158,7 +158,13 @@ fun OnboardingMedicalScreen(onContinue: () -> Unit) {
 
         Spacer(Modifier.height(44.dp))
 
-        FMPrimaryButton("SAVE & CONTINUE", onClick = onContinue)
+        FMPrimaryButton("SAVE & CONTINUE", onClick = {
+            AssessmentData.bloodType = selectedBloodType
+            AssessmentData.allergies = allergies
+            AssessmentData.medications = medications
+            AssessmentData.conditions = conditions
+            onContinue()
+        })
 
         Spacer(Modifier.height(12.dp))
         Text(

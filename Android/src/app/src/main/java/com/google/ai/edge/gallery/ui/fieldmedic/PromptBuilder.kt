@@ -2,24 +2,56 @@ package com.google.ai.edge.gallery.ui.fieldmedic
 
 /**
  * Builds the LLM prompt for the field medic assessment flow.
+ * Instructs Gemma to output a structured TriageInput JSON.
  */
 fun buildPrompt(hasAudio: Boolean, hasImage: Boolean, hasText: Boolean): String {
     val sb = StringBuilder()
-    sb.appendLine("You are a helpful outdoor safety assistant.")
-    sb.appendLine("A person is describing a situation they need help with.")
+    sb.appendLine("You are a medical triage classifier.")
+    sb.appendLine("A person is describing an injury or emergency situation.")
+    sb.appendLine()
 
-    if (hasAudio) sb.appendLine("They recorded audio describing the situation. Listen to it.")
-    if (hasImage) sb.appendLine("They took a photo. Examine it carefully.")
+    if (hasAudio) sb.appendLine("They recorded audio describing the situation. Listen to it carefully.")
+    if (hasImage) sb.appendLine("They took a photo of the injury or scene. Examine it carefully.")
     if (hasText) sb.appendLine("They typed: \"${AssessmentData.notes}\"")
 
     sb.appendLine()
-    sb.appendLine("Provide step-by-step guidance to help them.")
-    sb.appendLine("Format your response EXACTLY like this:")
-    sb.appendLine("SUMMARY: [one line describing the situation]")
-    sb.appendLine("STEPS:")
-    sb.appendLine("1. [Step title] | [Detail]")
-    sb.appendLine("2. [Step title] | [Detail]")
-    sb.appendLine("Mark critical steps with URGENT: before the title.")
-    sb.appendLine("Be concise and actionable.")
+    sb.appendLine("Classify this situation into a JSON object with EXACTLY this format:")
+    sb.appendLine("""
+{
+  "injury": "<type of injury, e.g. laceration, fracture, burn, choking>",
+  "severity": "<RED, YELLOW, or GREEN>",
+  "bodyPart": "<body part affected, e.g. left_forearm, right_leg, chest>",
+  "supplies": ["<any visible or mentioned supplies, e.g. cloth, tourniquet, bandage>"],
+  "userProfile": {
+    "bloodType": "${AssessmentData.bloodType.ifBlank { "unknown" }}",
+    "allergies": [${formatList(AssessmentData.allergies)}],
+    "medications": [${formatList(AssessmentData.medications)}],
+    "conditions": [${formatList(AssessmentData.conditions)}]
+  }
+}
+    """.trimIndent())
+
+    sb.appendLine()
+    sb.appendLine("Severity guide:")
+    sb.appendLine("- RED: Life-threatening, needs immediate action (heavy bleeding, not breathing, severe burn)")
+    sb.appendLine("- YELLOW: Serious but not immediately life-threatening (moderate bleeding, possible fracture, mild burn)")
+    sb.appendLine("- GREEN: Minor injury, can wait (small cut, bruise, scrape)")
+    sb.appendLine()
+    sb.appendLine("Rules:")
+    sb.appendLine("- Output ONLY the JSON object, no other text")
+    sb.appendLine("- Use snake_case for bodyPart values")
+    sb.appendLine("- If you cannot determine a field, use your best guess based on available information")
+    sb.appendLine("- The userProfile is pre-filled from the patient's records — include it exactly as shown")
+    sb.appendLine("- For supplies, list any items visible in the photo or mentioned in audio/text")
+
     return sb.toString()
+}
+
+/** Formats a comma-separated string into JSON array entries. */
+private fun formatList(input: String): String {
+    if (input.isBlank()) return ""
+    return input.split(",")
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .joinToString(", ") { "\"$it\"" }
 }

@@ -22,6 +22,7 @@ private const val ROUTE_ASSESSMENT = "fm_assessment"
 private const val ROUTE_THINKING = "fm_thinking"
 private const val ROUTE_GUIDANCE = "fm_guidance"
 private const val ROUTE_SUMMARY = "fm_summary"
+private const val ROUTE_TRIAGE_LOOP = "fm_triage_loop"
 
 @Composable
 fun FieldMedicNavHost(navController: NavHostController) {
@@ -79,7 +80,8 @@ fun FieldMedicNavHost(navController: NavHostController) {
 
             composable(ROUTE_HOME) {
                 FieldMedicHomeScreen(
-                    onGetHelp = { navController.navigate(ROUTE_ASSESSMENT) }
+                    onGetHelp = { navController.navigate(ROUTE_ASSESSMENT) },
+                    onTriageLoop = { navController.navigate(ROUTE_TRIAGE_LOOP) },
                 )
             }
 
@@ -106,6 +108,14 @@ fun FieldMedicNavHost(navController: NavHostController) {
                 GuidanceScreen(
                     viewModel = fmViewModel,
                     onEndSession = { navController.navigate(ROUTE_SUMMARY) }
+                )
+            }
+
+            composable(ROUTE_TRIAGE_LOOP) {
+                val triageVm: TriageLoopViewModel = viewModel()
+                TriageLoopScreen(
+                    viewModel = triageVm,
+                    onExit = { navController.navigateUp() },
                 )
             }
 

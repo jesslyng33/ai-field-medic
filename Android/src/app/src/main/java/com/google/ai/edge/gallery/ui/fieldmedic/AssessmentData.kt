@@ -11,6 +11,12 @@ object AssessmentData {
     var photoBitmap: Bitmap? = null
     var notes: String = ""
 
+    // User profile from onboarding
+    var bloodType: String = ""
+    var allergies: String = ""
+    var medications: String = ""
+    var conditions: String = ""
+
     fun clear() {
         audioWavBytes = null
         photoBitmap = null

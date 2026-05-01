@@ -35,7 +35,7 @@ import androidx.compose.ui.unit.sp
 import com.google.ai.edge.gallery.ui.theme.appFontFamily
 
 @Composable
-fun FieldMedicHomeScreen(onGetHelp: () -> Unit) {
+fun FieldMedicHomeScreen(onGetHelp: () -> Unit, onTriageLoop: () -> Unit = {}) {
     val pulse = rememberInfiniteTransition(label = "pulse")
     val pulseScale by pulse.animateFloat(
         initialValue = 1f,
@@ -161,13 +161,19 @@ fun FieldMedicHomeScreen(onGetHelp: () -> Unit) {
             }
         }
 
-        // Bottom — hint
+        // Bottom — Live Triage + hint
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.padding(bottom = 40.dp),
         ) {
+            FMPrimaryButton(
+                text = "LIVE TRIAGE",
+                onClick = onTriageLoop,
+                color = FMGreen,
+            )
+            Spacer(Modifier.height(16.dp))
             Text(
-                "Tap to describe your emergency",
+                "Tap SOS or start live triage",
                 color = FMTextSub,
                 fontSize = 14.sp,
                 fontFamily = appFontFamily,
