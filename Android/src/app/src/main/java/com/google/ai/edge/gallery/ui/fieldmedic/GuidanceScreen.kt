@@ -25,6 +25,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -41,55 +43,55 @@ private data class GuidanceStep(
     val urgent: Boolean = false,
 )
 
-private val MOCK_STEPS = listOf(
-    GuidanceStep(
-        step = "Stay calm. Stop all movement.",
-        detail = "Panic increases blood loss and worsens shock. Sit or lie down immediately.",
-        urgent = true,
-    ),
-    GuidanceStep(
-        step = "Apply direct pressure to the wound.",
-        detail = "Use the cleanest cloth available. Press firmly with both hands. Do not lift to check — add more cloth on top if it soaks through.",
-    ),
-    GuidanceStep(
-        step = "Elevate if possible.",
-        detail = "Raise the injured limb above heart level to slow bleeding. Support it with a pack or rolled clothing.",
-    ),
-    GuidanceStep(
-        step = "Check for shock.",
-        detail = "Watch for: pale or clammy skin, rapid shallow breathing, confusion or weakness. If any appear, keep the person flat and warm.",
-        urgent = true,
-    ),
-    GuidanceStep(
-        step = "Apply tourniquet if bleeding does not stop.",
-        detail = "Place 2–3 inches above the wound. Tighten until bleeding stops. Note the time applied. Do not remove.",
-    ),
-    GuidanceStep(
-        step = "Keep the person warm.",
-        detail = "Cover with any available insulation. Hypothermia worsens shock significantly in outdoor settings.",
-    ),
-    GuidanceStep(
-        step = "Monitor breathing every 5 minutes.",
-        detail = "Count breaths per minute. Normal is 12–20. Note any changes.",
-    ),
-    GuidanceStep(
-        step = "Signal for help.",
-        detail = "Activate personal locator beacon if available. Use whistle: 3 blasts = distress signal. Stay visible.",
-        urgent = true,
-    ),
-)
+/** Parse LLM response into structured steps. */
+private fun parseSteps(response: String): Pair<String, List<GuidanceStep>> {
+    val lines = response.lines()
+    var summary = ""
+    val steps = mutableListOf<GuidanceStep>()
+
+    for (line in lines) {
+        val trimmed = line.trim()
+        if (trimmed.startsWith("SUMMARY:", ignoreCase = true)) {
+            summary = trimmed.removePrefix("SUMMARY:").trim()
+        }
+        // Match lines like "1. Step title | detail" or "1. URGENT: Step | detail"
+        val stepMatch = Regex("""^\d+\.\s*(.+)""").find(trimmed)
+        if (stepMatch != null) {
+            val content = stepMatch.groupValues[1]
+            val urgent = content.startsWith("URGENT:", ignoreCase = true)
+            val cleaned = if (urgent) content.removePrefix("URGENT:").trim() else content
+            val parts = cleaned.split("|", limit = 2)
+            val title = parts[0].trim()
+            val detail = if (parts.size > 1) parts[1].trim() else ""
+            steps.add(GuidanceStep(step = title, detail = detail, urgent = urgent))
+        }
+    }
+
+    // Fallback: if parsing produced nothing, show raw response as a single step
+    if (steps.isEmpty()) {
+        steps.add(GuidanceStep(step = "Guidance", detail = response))
+    }
+    if (summary.isEmpty()) {
+        summary = "Assessment complete"
+    }
+
+    return summary to steps
+}
 
 @Composable
-fun GuidanceScreen(onEndSession: () -> Unit) {
-    val visible = remember { mutableStateListOf<Boolean>().also { list ->
-        repeat(MOCK_STEPS.size) { list.add(false) }
+fun GuidanceScreen(viewModel: FieldMedicViewModel, onEndSession: () -> Unit) {
+    val response by viewModel.llmResponse.collectAsState()
+    val (summary, steps) = remember(response) { parseSteps(response) }
+
+    val visible = remember(steps) { mutableStateListOf<Boolean>().also { list ->
+        repeat(steps.size) { list.add(false) }
     } }
     val scrollState = rememberScrollState()
 
-    LaunchedEffect(Unit) {
-        MOCK_STEPS.forEachIndexed { index, _ ->
+    LaunchedEffect(steps) {
+        steps.forEachIndexed { index, _ ->
             delay(if (index == 0) 400L else 1400L)
-            visible[index] = true
+            if (index < visible.size) visible[index] = true
             delay(100L)
             scrollState.animateScrollTo(scrollState.maxValue)
         }
@@ -131,7 +133,7 @@ fun GuidanceScreen(onEndSession: () -> Unit) {
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "Laceration · Moderate bleeding · Solo",
+                summary,
                 color = FMTextSub,
                 fontSize = 13.sp,
                 fontFamily = appFontFamily,
@@ -146,7 +148,7 @@ fun GuidanceScreen(onEndSession: () -> Unit) {
                 .padding(horizontal = 20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            MOCK_STEPS.forEachIndexed { index, step ->
+            steps.forEachIndexed { index, step ->
                 AnimatedVisibility(
                     visible = visible.getOrElse(index) { false },
                     enter = fadeIn(tween(500)) + slideInVertically(tween(400)) { it / 3 },

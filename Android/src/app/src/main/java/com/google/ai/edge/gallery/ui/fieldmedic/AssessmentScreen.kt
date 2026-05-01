@@ -32,7 +32,21 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.Matrix
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,21 +54,55 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.ai.edge.gallery.ui.theme.appFontFamily
+import java.util.concurrent.Executors
 
 @Composable
 fun AssessmentScreen(
+    viewModel: FieldMedicViewModel,
     onBack: () -> Unit,
     onAnalyze: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    val audioRecorded by viewModel.audioRecorded.collectAsState()
+    val photoBitmap by viewModel.photoBitmap.collectAsState()
     var isRecording by remember { mutableStateOf(false) }
-    var audioRecorded by remember { mutableStateOf(false) }
-    var photoTaken by remember { mutableStateOf(false) }
+    var photoTaken by remember { mutableStateOf(photoBitmap != null) }
     var notes by remember { mutableStateOf("") }
+
+    // Camera state
+    var showCamera by remember { mutableStateOf(false) }
+    var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
+    val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+
+    // Permission launchers
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            isRecording = true
+            viewModel.startRecording()
+        }
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) showCamera = true
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { cameraExecutor.shutdown() }
+    }
 
     val hasInput = audioRecorded || photoTaken || notes.isNotBlank()
 
@@ -155,10 +203,16 @@ fun AssessmentScreen(
                         .clickable {
                             if (isRecording) {
                                 isRecording = false
-                                audioRecorded = true
+                                viewModel.stopRecording()
                             } else {
-                                isRecording = true
-                                audioRecorded = false
+                                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+                                    == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    isRecording = true
+                                    viewModel.startRecording()
+                                } else {
+                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
                             }
                         },
                     contentAlignment = Alignment.Center,
@@ -214,7 +268,20 @@ fun AssessmentScreen(
                             if (photoTaken) FMGreenBright else FMBorder,
                             RoundedCornerShape(12.dp),
                         )
-                        .clickable { photoTaken = !photoTaken },
+                        .clickable {
+                            if (!photoTaken) {
+                                if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                                    == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    showCamera = true
+                                } else {
+                                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                }
+                            } else {
+                                photoTaken = false
+                                showCamera = false
+                            }
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
                     Row(
@@ -238,6 +305,69 @@ fun AssessmentScreen(
             }
         }
 
+        // Camera preview
+        if (showCamera && !photoTaken) {
+            Spacer(Modifier.height(12.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp)
+                    .background(FMSurface, RoundedCornerShape(12.dp)),
+            ) {
+                AndroidView(
+                    factory = { ctx ->
+                        val previewView = PreviewView(ctx)
+                        val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                        cameraProviderFuture.addListener({
+                            val cameraProvider = cameraProviderFuture.get()
+                            val preview = Preview.Builder().build().also {
+                                it.surfaceProvider = previewView.surfaceProvider
+                            }
+                            val capture = ImageCapture.Builder()
+                                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                                .build()
+                            imageCapture = capture
+                            cameraProvider.unbindAll()
+                            cameraProvider.bindToLifecycle(
+                                lifecycleOwner,
+                                CameraSelector.DEFAULT_BACK_CAMERA,
+                                preview,
+                                capture,
+                            )
+                        }, ContextCompat.getMainExecutor(ctx))
+                        previewView
+                    },
+                    modifier = Modifier.matchParentSize(),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            FMPrimaryButton(
+                text = "CAPTURE",
+                onClick = {
+                    val capture = imageCapture ?: return@FMPrimaryButton
+                    capture.takePicture(cameraExecutor, object : ImageCapture.OnImageCapturedCallback() {
+                        override fun onCaptureSuccess(imageProxy: ImageProxy) {
+                            val bmp = imageProxyToBitmap(imageProxy)
+                            imageProxy.close()
+                            if (bmp != null) {
+                                viewModel.setPhoto(bmp)
+                                photoTaken = true
+                                showCamera = false
+                                // Unbind camera
+                                try {
+                                    ProcessCameraProvider.getInstance(context).get().unbindAll()
+                                } catch (_: Exception) {}
+                            }
+                        }
+                        override fun onError(e: ImageCaptureException) {
+                            android.util.Log.e("AssessmentScreen", "Capture failed", e)
+                        }
+                    })
+                },
+                color = FMRed,
+            )
+        }
+
         Spacer(Modifier.height(16.dp))
 
         // Notes field
@@ -257,7 +387,10 @@ fun AssessmentScreen(
         // Analyze button
         FMPrimaryButton(
             text = "ANALYZE",
-            onClick = onAnalyze,
+            onClick = {
+                viewModel.setNotes(notes)
+                onAnalyze()
+            },
             color = if (hasInput) FMRed else FMBorder,
         )
         Spacer(Modifier.height(8.dp))
@@ -273,4 +406,16 @@ fun AssessmentScreen(
         }
         Spacer(Modifier.height(20.dp))
     }
+}
+
+private fun imageProxyToBitmap(imageProxy: ImageProxy): Bitmap? {
+    val buffer = imageProxy.planes[0].buffer
+    val bytes = ByteArray(buffer.remaining())
+    buffer.get(bytes)
+    val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+    val rotation = imageProxy.imageInfo.rotationDegrees
+    if (rotation == 0) return bitmap
+    val matrix = Matrix()
+    matrix.postRotate(rotation.toFloat())
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
 }
