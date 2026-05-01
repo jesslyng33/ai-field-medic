@@ -211,6 +211,13 @@ fun FieldMedicNavHost(navController: NavHostController) {
                     onEditConditions = { navController.navigate(ROUTE_SETTINGS_CONDITIONS) },
                     onEditMedications = { navController.navigate(ROUTE_SETTINGS_MEDICATIONS) },
                     onEditContacts = { navController.navigate(ROUTE_SETTINGS_CONTACT) },
+                    onRestartOnboarding = {
+                        // VM has already wiped Room + AssessmentData by the time this runs.
+                        prefs.edit().putBoolean(PREF_MEDICAL_DONE, false).apply()
+                        navController.navigate(ROUTE_ONBOARDING_GRAPH) {
+                            popUpTo(0) { inclusive = true }
+                        }
+                    },
                 )
             }
             composable(ROUTE_SETTINGS_ALLERGIES) {

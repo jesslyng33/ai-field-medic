@@ -8,12 +8,15 @@ import com.google.ai.edge.gallery.database.entities.EmergencyContact
 import com.google.ai.edge.gallery.database.entities.MedicalCondition
 import com.google.ai.edge.gallery.database.entities.Medication
 import com.google.ai.edge.gallery.database.relations.UserProfileWithDetails
+import com.google.ai.edge.gallery.ui.fieldmedic.AssessmentData
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -99,6 +102,26 @@ class SettingsViewModel @Inject constructor(
                 isPrimary = true,
                 canMakeMedicalDecisions = canMakeMedicalDecisions,
             )
+        }
+    }
+
+    /**
+     * Wipes the stored profile and all related medical data, then clears the
+     * in-memory [AssessmentData] (including the cached [UserMedicalContext] and
+     * trip selections). Calls [onDone] on the main dispatcher when finished, so
+     * the caller can flip the onboarding pref and navigate.
+     */
+    fun restartProfile(onDone: () -> Unit) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { repo.clearAllUserData() }
+            AssessmentData.userContext = null
+            AssessmentData.tripLocation = ""
+            AssessmentData.soloTraveler = true
+            AssessmentData.firstAidKit = emptySet()
+            AssessmentData.audioWavBytes = null
+            AssessmentData.photoBitmap = null
+            AssessmentData.notes = ""
+            withContext(Dispatchers.Main) { onDone() }
         }
     }
 }

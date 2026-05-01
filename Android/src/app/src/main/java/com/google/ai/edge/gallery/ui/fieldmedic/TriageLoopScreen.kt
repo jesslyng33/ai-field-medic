@@ -108,6 +108,8 @@ fun TriageLoopScreen(
     val detections by viewModel.latestDetections.collectAsState()
     val cameraFacing by viewModel.cameraFacing.collectAsState()
     val userIntent by viewModel.userIntent.collectAsState()
+    val debugLog by viewModel.debugLog.collectAsState()
+    var showDebug by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
 
     val activity = when {
         isSpeaking -> LoopActivity.SPEAKING

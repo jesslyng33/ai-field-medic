@@ -138,6 +138,16 @@ class UserProfileRepository @Inject constructor(
         dao.insertAccessibilityNeeds(needs.copy(userId = PRIMARY_USER_ID))
     }
 
+    /**
+     * Wipes the entire stored profile for the primary user. CASCADE foreign keys on
+     * the related tables (allergies, conditions, medications, surgeries, implants,
+     * emergency contacts, healthcare info, accessibility needs) will delete child
+     * rows automatically.
+     */
+    suspend fun clearAllUserData() {
+        dao.deleteUserProfileById(PRIMARY_USER_ID)
+    }
+
     companion object {
         const val PRIMARY_USER_ID = "primary_user"
     }

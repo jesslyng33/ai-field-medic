@@ -28,7 +28,10 @@ import androidx.compose.material.icons.filled.LocalHospital
 import androidx.compose.material.icons.filled.LocalPharmacy
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -36,6 +39,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -68,9 +74,11 @@ fun SettingsScreen(
     onEditConditions: () -> Unit,
     onEditMedications: () -> Unit,
     onEditContacts: () -> Unit,
+    onRestartOnboarding: () -> Unit = {},
     vm: SettingsViewModel = hiltViewModel(),
 ) {
     val profile by vm.profile.collectAsState()
+    var showRestartDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -168,6 +176,13 @@ fun SettingsScreen(
             summary = "Default",
             onClick = {},
         )
+        SettingsRow(
+            icon = Icons.Filled.Refresh,
+            label = "Restart onboarding",
+            summary = "Wipe profile and start over",
+            onClick = { showRestartDialog = true },
+            iconTint = FMRedBright,
+        )
 
         Spacer(Modifier.height(40.dp))
         Text(
@@ -180,6 +195,55 @@ fun SettingsScreen(
                 .padding(horizontal = 28.dp),
         )
         Spacer(Modifier.height(40.dp))
+    }
+
+    if (showRestartDialog) {
+        AlertDialog(
+            onDismissRequest = { showRestartDialog = false },
+            containerColor = FMSurface,
+            title = {
+                Text(
+                    "Restart onboarding?",
+                    color = FMText,
+                    fontFamily = appFontFamily,
+                    fontWeight = FontWeight.Bold,
+                )
+            },
+            text = {
+                Text(
+                    "This deletes your saved profile, allergies, conditions, " +
+                        "medications, contacts, and trip details. You'll go " +
+                        "through onboarding again. This can't be undone.",
+                    color = FMTextSub,
+                    fontFamily = appFontFamily,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRestartDialog = false
+                    vm.restartProfile { onRestartOnboarding() }
+                }) {
+                    Text(
+                        "RESTART",
+                        color = FMRedBright,
+                        fontFamily = appFontFamily,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.5.sp,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestartDialog = false }) {
+                    Text(
+                        "CANCEL",
+                        color = FMTextSub,
+                        fontFamily = appFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.5.sp,
+                    )
+                }
+            },
+        )
     }
 }
 

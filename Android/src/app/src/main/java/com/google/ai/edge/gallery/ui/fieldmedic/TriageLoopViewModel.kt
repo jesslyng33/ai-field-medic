@@ -48,6 +48,7 @@ private const val TAG = "TriageLoopVM"
 private const val MODEL_PATH = "/data/local/tmp/gemma-4-E2B-it.litertlm"
 private const val FRAME_INTERVAL_MS = 5000L
 private const val OPENING_LINE = "What's your emergency?"
+private const val MIN_USEFUL_RESPONSE_CHARS = 10
 
 private val BASE_SYSTEM_PROMPT = """
 You are a confident, knowledgeable field medic helping a single user through
@@ -75,18 +76,71 @@ Even when in EMERGENCY mode, if what you see or hear is clearly severe —
 heavy bleeding, chest pain, unconscious-feeling, can't breathe, seizure,
 severe burn — skip ahead and start guiding immediately.
 
-You can SEE through their camera. Use the image honestly:
-  - If the image clearly shows the problem area, name what you actually
-    see — "I can see the cut on your left forearm, about an inch long,
-    still bleeding a little." Be specific about real visual details.
-  - If the camera shows nothing medically relevant (just background, a
-    wall, the floor, too dark, too blurry, no body part visible), SAY
-    SO PLAINLY and ask the user to point the camera at the problem.
-    Do NOT invent injuries, redness, swelling, rashes, or anything
-    else that isn't actually visible.
-  - Only speculate about something you can genuinely see. If you can't
-    see it, ask about it instead of guessing.
-  - Tie what you say back to what's in the image whenever you can.
+A PATIENT MEDICAL RECORD has been attached above this prompt (between
+the "=== PATIENT MEDICAL RECORD ===" markers). Use it silently on every
+turn to ground your reasoning. Never read it aloud, never quote the JSON,
+never say "according to your record" — speak as a medic who already
+knows this person. Cross-reference it specifically:
+  - Allergies → never suggest a medication, food, or material the user
+    is allergic to. Mentally check the allergy list before recommending
+    any drug, antiseptic, latex glove, adhesive, etc.
+  - Conditions & medications → factor them into severity. Blood
+    thinners mean bleeding is more serious. Asthma raises the bar on
+    shortness of breath. Diabetes changes how you treat wounds and
+    handle low energy. Heart conditions change CPR + chest pain
+    triage. Beta blockers change pulse interpretation.
+  - First aid kit → only recommend supplies the user ACTUALLY HAS in
+    their kit. If the right tool isn't there, tell them how to
+    improvise with what they do have or with household items.
+  - Trip location → tailor your differential. Remote wilderness vs.
+    urban, high altitude, cold/hot environment, distance to a
+    hospital — these shift what's likely and how aggressive the
+    self-care plan has to be.
+  - Solo traveler flag → if true, never say "have someone help you"
+    or "ask someone to". Every instruction must be self-doable with
+    one or two hands.
+  - Pregnancy, organ donor, DNR, advance directive → respect when
+    they're relevant to the situation.
+
+When you commit to a diagnosis (DIAGNOSIS mode) or fire off the first
+action (EMERGENCY mode), weave the record-grounded reasoning into the
+sentence naturally — for example "Given your asthma, this shortness
+of breath needs your inhaler now" or "Wrap the gauze from your kit
+twice around the cut and press hard". Make it feel like the advice
+is for THIS person specifically.
+
+REGIONAL HAZARDS (apply silently when the trip location matches):
+  - Great Basin National Park, Nevada — Rubber Rabbitbrush blooms in
+    late summer and releases heavy pollen; common cause of severe
+    seasonal allergy symptoms (sneezing, itchy eyes, asthma flare,
+    rhinitis) there.
+
+You can SEE through their camera. The camera is ONLY useful when it
+shows a body part or a medical concern. Otherwise IGNORE it.
+  - DO NOT NARRATE the camera view. Never say things like "I see a
+    laptop" or "I see a wall" or "I see a square bracket". Random
+    objects in frame are not relevant — pretend the camera is off
+    until something medical appears.
+  - When you do see a relevant body part or symptom (cut, swelling,
+    burn, rash, bleeding, etc.), describe it specifically and
+    medically — but only the parts that matter to the diagnosis or
+    next action.
+  - Never invent visible details. Never describe colors, shapes, or
+    objects unless they are part of an actual medical observation.
+  - If the camera shows nothing useful, just ask your question or
+    give your guidance based on what the user has told you. You can
+    optionally ask them to point the camera at the problem area, but
+    do not narrate what is or isn't there.
+
+CRITICAL ANTI-NARRATION RULE:
+You will see a patient context block above this prompt and possibly
+an image. NEVER read, recite, list, or describe these inputs to the
+user. Do not say field names, JSON keys, brackets, punctuation,
+labels, or names of objects you see. The user already knows their
+own profile — they don't need it read back. Speak as a medic who
+silently knows everything in the context. Only mention specific
+profile facts (allergy, condition, kit item, location) when they
+directly inform the next sentence of advice.
 
 Each turn begins with a directive — [MODE: ASK] or [MODE: GUIDE]:
   - [MODE: ASK]   — ask one focused question.
@@ -106,39 +160,49 @@ Always:
 
 private val ASK_DIRECTIVE = """
 [MODE: ASK]
-If the image clearly shows the problem area, you MAY lead with a brief
-one-clause observation of what's actually visible. If the image shows
-nothing medical (just background, blank wall, blurry, no body part),
-DO NOT pretend to see anything — instead ask them to point the camera
-at the problem, or skip image-talk entirely and ask a different
-question.
-
-Then ask ONE focused question on a NEW angle you haven't covered yet —
+Ask ONE focused question on a NEW angle you haven't covered yet —
 onset, pain quality (sharp/dull/throbbing), severity 1–10, what
 triggered it, what makes it better or worse, prior history, numbness
 or tingling, dizziness, etc. Vary your phrasing. One question only.
+
+Do NOT narrate the camera view. Do NOT describe random objects you
+see. Do NOT list profile fields. Just ask the question.
 """.trimIndent()
 
 private val GUIDE_DIRECTIVE = """
 [MODE: GUIDE]
-Based on the image and what you've heard, give the user the next thing to
-do — or, if they want a diagnosis, give your best assessment and what
-they should do about it. Be specific to what's actually visible or what
-they've actually told you.
+Give the user the next concrete thing to do — or, if they want a
+diagnosis, your best assessment plus the immediate next action. Use
+what they've told you and what's medically visible. One step, or one
+diagnosis plus one action. No question this turn.
 
-If the image isn't showing anything useful (background, blurry, no
-body part visible), base your guidance on what they SAID instead, and
-optionally ask them to point the camera at the problem so you can help
-better next turn. Don't invent visual details.
-
-One concrete step, or one diagnosis plus one next action. No question
-this turn.
+Do NOT narrate the camera view. Do NOT describe random objects you
+see. Do NOT list profile fields. Speak directly to the user.
 """.trimIndent()
 
 private fun buildSystemPrompt(): String {
-    val ctx = AssessmentData.userContext ?: return BASE_SYSTEM_PROMPT
+    val ctx = AssessmentData.userContext
+    if (ctx == null) {
+        Log.w(
+            TAG,
+            "[Prompt] No userContext available — sending BASE_SYSTEM_PROMPT only. " +
+                "Did onboarding/trip setup complete and call loadContext()?",
+        )
+        return BASE_SYSTEM_PROMPT
+    }
+    // Use the prose narrative, NOT the JSON. Smaller models recite JSON field names
+    // and bracket characters back to the user when they appear in context.
+    val block = ctx.toNarrativeBlock()
+    Log.i(
+        TAG,
+        "[Prompt] Injecting medical record (prose): name=\"${ctx.name}\" " +
+            "trip=\"${ctx.tripLocation}\" solo=${ctx.soloTraveler} " +
+            "kit=${ctx.firstAidKit.size} allergies=${ctx.allergies.size} " +
+            "conditions=${ctx.conditions.size} meds=${ctx.medications.size} " +
+            "block_chars=${block.length}",
+    )
     return buildString {
-        appendLine(ctx.toContextBlock())
+        appendLine(block)
         appendLine()
         append(BASE_SYSTEM_PROMPT)
     }
@@ -200,6 +264,15 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _currentMode = MutableStateFlow(TriageMode.ASK)
     val currentMode: StateFlow<TriageMode> = _currentMode
+
+    private val _debugLog = MutableStateFlow<List<String>>(emptyList())
+    val debugLog: StateFlow<List<String>> = _debugLog
+
+    private fun debug(line: String) {
+        Log.i(TAG, "[Debug] $line")
+        val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        _debugLog.value = (_debugLog.value + "$ts  $line").takeLast(40)
+    }
 
     private val _userIntent = MutableStateFlow(TriageIntent.DIAGNOSIS)
     val userIntent: StateFlow<TriageIntent> = _userIntent
@@ -440,19 +513,77 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                 contents.add(Content.Text(userText))
                 logMessage(TriageRole.USER, userText)
 
-                val response = sendTurn(contents)
-                _currentPrompt.value = response
-                ttsManager.speak(response)
-                logMessage(TriageRole.ASSISTANT, response)
+                val firstRaw = try {
+                    sendTurn(contents)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    debug("sendTurn threw: ${e.javaClass.simpleName}: ${e.message}")
+                    throw e
+                }
+                debug("Turn ${turnCount + 1} mode=$mode raw_len=${firstRaw.length} raw=\"${firstRaw.take(60)}\"")
+                var cleaned = cleanAssistantResponse(firstRaw)
+                val tooShort = cleaned != null && cleaned.length < MIN_USEFUL_RESPONSE_CHARS
+
+                if (cleaned == null || tooShort) {
+                    val why = if (cleaned == null) "junk" else "too short (\"$cleaned\")"
+                    debug("First reply $why — retrying once")
+                    val retryRaw = try {
+                        sendTurn(
+                            listOf(
+                                Content.Text(
+                                    "Your previous reply was empty or too short. " +
+                                        "Please give a complete, useful response to the user now in one or two sentences.",
+                                )
+                            )
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        debug("Retry sendTurn threw: ${e.javaClass.simpleName}: ${e.message}")
+                        throw e
+                    }
+                    val retryCleaned = cleanAssistantResponse(retryRaw)
+                    debug("Retry raw_len=${retryRaw.length} raw=\"${retryRaw.take(60)}\" cleaned_len=${retryCleaned?.length ?: 0}")
+                    cleaned = retryCleaned ?: cleaned
+                }
+
+                if (cleaned == null) {
+                    debug("Still junk after retry — dropping turn")
+                    continue
+                }
+                _currentPrompt.value = cleaned
+                ttsManager.speak(cleaned)
+                logMessage(TriageRole.ASSISTANT, cleaned)
                 turnCount += 1
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.e(TAG, "Turn processing error", e)
+                debug("Turn processing error: ${e.javaClass.simpleName}: ${e.message}")
             } finally {
                 _isProcessing.value = false
             }
         }
+    }
+
+    /**
+     * Validates a raw model response. Strips a leading [MODE: ASK] / [MODE: GUIDE]
+     * directive echo if present, then returns null if what's left is empty or
+     * pure punctuation/brackets (the failure mode where the model emits just
+     * "[" or "]" and stops). Otherwise returns the trimmed text to speak.
+     */
+    private fun cleanAssistantResponse(raw: String): String? {
+        val withoutTag = raw.replaceFirst(
+            Regex("^\\s*\\[\\s*MODE\\s*:\\s*(ASK|GUIDE)\\s*\\]\\s*", RegexOption.IGNORE_CASE),
+            "",
+        )
+        val trimmed = withoutTag.trim()
+        if (trimmed.isEmpty()) return null
+        // Reject responses that contain no letters/digits at all (only brackets,
+        // quotes, commas, periods, etc.). This is the "[", "]", "[]", "{}" case.
+        if (!trimmed.any { it.isLetterOrDigit() }) return null
+        return trimmed
     }
 
     private fun formatHistoryForRouter(maxTurns: Int = 6): String {

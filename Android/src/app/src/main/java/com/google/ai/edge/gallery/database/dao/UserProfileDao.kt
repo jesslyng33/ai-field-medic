@@ -17,6 +17,10 @@ interface UserProfileDao {
     @Delete
     suspend fun deleteUserProfile(profile: UserProfile)
 
+    /** Wipes the user_profile row by id; cascades to all related tables via FK. */
+    @Query("DELETE FROM user_profile WHERE userId = :userId")
+    suspend fun deleteUserProfileById(userId: String)
+
     @Query("SELECT * FROM user_profile WHERE userId = :userId")
     fun getUserProfile(userId: String): Flow<UserProfile?>
 
