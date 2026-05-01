@@ -1,0 +1,61 @@
+{
+  "_comment": "Pre-scripted demo conversations. Edit this file to change the canned responses or matching keywords. Matching is case-insensitive substring on the normalized user transcript. A turn fires when the number of keyPhrases found in the user's speech meets or exceeds minMatches. The first matching demo becomes 'active' and only its remaining turns are checked, in order, until the demo runs out — then the loop falls back to Gemma.",
+
+  "demos": [
+    {
+      "id": "demo1_bleeding_arm",
+      "description": "Heavy bleeding from a cut on the forearm; user goes into early shock, recovers, and is prompted to end the session for the summary.",
+      "turns": [
+        {
+          "_note": "Frame 1 — bleeding arm in view. User describes the fall.",
+          "keyPhrases": ["tripped", "rock", "cut", "arm", "branch", "blood", "bleeding", "everywhere"],
+          "minMatches": 2,
+          "response": "I hear you. I can see a deep cut on the forearm with heavy bleeding. First thing, press down hard on the wound with cloth from your first aid kit."
+        },
+        {
+          "_note": "Frame 2 — cloth on wound, user reports dizziness.",
+          "keyPhrases": ["pressing", "slowing", "dizzy", "nauseous", "lightheaded", "feel sick"],
+          "minMatches": 1,
+          "response": "That could be an early shock from blood loss. Lay down on your back and elevate your legs. Keep yourself warm with a jacket or anything you have."
+        },
+        {
+          "_note": "Frame 3 — user lying on back with legs elevated. Encourage and check in.",
+          "keyPhrases": ["legs", "elevated", "elevate", "lying down", "laying down", "on my back", "lying on", "laying on", "did it"],
+          "minMatches": 1,
+          "response": "Great job — you're doing exactly the right things. How are you feeling now?"
+        },
+        {
+          "_note": "User reports they're doing good — wrap up and direct them to the summary.",
+          "keyPhrases": ["doing good", "i'm good", "im good", "i'm fine", "im fine", "feeling good", "feeling better", "all good", "much better"],
+          "minMatches": 1,
+          "response": "Excellent — you're stable. Stay lying down for a few more minutes, then tap End Session at the bottom of your screen. I'll put together a summary you can show emergency services or a ranger when help arrives."
+        }
+      ]
+    },
+
+    {
+      "id": "demo2_hives_diagnosis",
+      "description": "Unknown rash that turns out to be pollen allergy from Rubber Rabbitbrush in Great Basin National Park; user has antihistamines in kit.",
+      "turns": [
+        {
+          "_note": "Frame 2 — hives on arm, user asks for help identifying cause.",
+          "keyPhrases": ["hives", "rash", "bumps", "where they are coming from", "coming from", "bad case", "itchy"],
+          "minMatches": 1,
+          "response": "Hives are uncomfortable but usually not dangerous. Do you remember when you first noticed them, and on a scale of one to ten how severe is the itching?"
+        },
+        {
+          "_note": "User: 'when I got into national park, 8, severe'.",
+          "keyPhrases": ["national park", "national", "park", "got into", "basin", "8", "eight", "severe", "trail"],
+          "minMatches": 2,
+          "response": "I think I have your trigger. Your profile flags a pollen allergy, and Great Basin National Park is full of Rubber Rabbitbrush — it blooms heavily this time of year and throws off a lot of pollen. That's very likely what's reacting on your skin. Do you have antihistamines in your kit?"
+        },
+        {
+          "_note": "Frame 3 — treatment. User asks dosage for Benadryl.",
+          "keyPhrases": ["benadryl", "antihistamine", "antihistamines", "how much", "how many", "dosage", "take"],
+          "minMatches": 1,
+          "response": "Take one Benadryl now — that's twenty-five milligrams. It should start working in fifteen to thirty minutes. While you wait: rinse your arms with water if you have any to wash off the pollen, cover the skin with long sleeves if you packed a layer, and try not to scratch — scratching makes hives spread and last longer. I'll check back in fifteen minutes. If they aren't improving by then, we head back to the trailhead. You're safe — uncomfortable, but not dangerous as long as it stays on your skin."
+        }
+      ]
+    }
+  ]
+}

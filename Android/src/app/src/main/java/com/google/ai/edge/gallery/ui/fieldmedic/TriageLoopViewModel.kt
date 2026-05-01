@@ -103,19 +103,60 @@ private fun buildSystemPrompt(): String {
     // Use the prose narrative, NOT the JSON. Smaller models recite JSON field names
     // and bracket characters back to the user when they appear in context.
     val block = ctx.toNarrativeBlock()
+    val hazardsBlock = buildRegionalHazardsBlock(ctx)
     Log.i(
         TAG,
         "[Prompt] Injecting medical record (prose): name=\"${ctx.name}\" " +
             "trip=\"${ctx.tripLocation}\" solo=${ctx.soloTraveler} " +
             "kit=${ctx.firstAidKit.size} allergies=${ctx.allergies.size} " +
             "conditions=${ctx.conditions.size} meds=${ctx.medications.size} " +
-            "block_chars=${block.length}",
+            "block_chars=${block.length} hazards_chars=${hazardsBlock.length}",
     )
     return buildString {
         appendLine(block)
         appendLine()
         append(BASE_SYSTEM_PROMPT)
+        if (hazardsBlock.isNotBlank()) {
+            appendLine()
+            appendLine()
+            append(hazardsBlock)
+        }
     }
+}
+
+// Hard-coded regional / profile triggers that Gemma must recite verbatim
+// when the situation matches. Add new triggers here as a new `if` block —
+// each returns a sentence (or short paragraph) that gets appended to the
+// system prompt as a MUST-CITE instruction.
+private fun buildRegionalHazardsBlock(ctx: UserMedicalContext): String {
+    val location = ctx.tripLocation.lowercase()
+    val allergens = ctx.allergies.map { it.allergen.lowercase() }
+    val reactions = ctx.allergies.map { it.reaction.lowercase() }
+
+    val triggers = mutableListOf<String>()
+
+    // Great Basin National Park + pollen allergy → Rubber Rabbitbrush.
+    val inGreatBasin = location.contains("great basin")
+    val hasPollenAllergy = allergens.any { it.contains("pollen") }
+    val reactsWithHives = reactions.any { it.contains("hives") }
+    if (inGreatBasin && hasPollenAllergy) {
+        val reactionMention = if (reactsWithHives) " (their profile lists hives as the reaction)" else ""
+        triggers.add(
+            "TRIGGER — Great Basin National Park + pollen allergy$reactionMention. " +
+                "If the user mentions hives, a rash, itchy bumps, or anything that " +
+                "looks like an allergic skin reaction, you MUST recite this fact " +
+                "verbatim in your response: \"Great Basin National Park is known " +
+                "for Rubber Rabbitbrush, which blooms heavily this time of year " +
+                "and produces a lot of pollen.\" Then connect it to their pollen " +
+                "allergy as the likely trigger and continue with treatment guidance."
+        )
+    }
+
+    if (triggers.isEmpty()) return ""
+    return buildString {
+        appendLine("REGIONAL & PROFILE HAZARDS (must-cite when matched):")
+        triggers.forEach { appendLine("- $it") }
+    }.trimEnd()
 }
 
 enum class LoopState { INITIALIZING, RUNNING, ERROR }
@@ -246,6 +287,9 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     fun startLoop() {
         if (started) return
         started = true
+
+        DemoConversations.loadIfNeeded(getApplication())
+        DemoConversations.reset()
 
         viewModelScope.launch(Dispatchers.Default) {
             try {
@@ -427,6 +471,23 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 Log.i(TAG, "▶ processTurns: got turn, userText=\"${userText.take(50)}\"")
 
+                // Demo bypass: if the user's speech matches the next expected
+                // turn of a scripted demo, skip Gemma and reply with the
+                // pre-written response. Edit assets/demo_conversations.json
+                // to tune phrasing or add demos.
+                val rawSpeech = extractRawSpeech(userText)
+                val cannedResponse = rawSpeech?.let { DemoConversations.tryMatch(it) }
+                if (cannedResponse != null) {
+                    Log.i(TAG, "Demo bypass — using canned response, skipping Gemma")
+                    debug("Demo bypass turn ${turnCount + 1}")
+                    logMessage(TriageRole.USER, userText)
+                    _currentPrompt.value = cannedResponse
+                    ttsManager.speak(cannedResponse)
+                    logMessage(TriageRole.ASSISTANT, cannedResponse)
+                    turnCount += 1
+                    continue
+                }
+
                 // Snapshot the frame
                 val frame = latestFrameBitmap
                 val frameBytes = frame?.let { bitmapToPng(it) }
@@ -554,6 +615,14 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
         // quotes, commas, periods, etc.). This is the "[", "]", "[]", "{}" case.
         if (!trimmed.any { it.isLetterOrDigit() }) return null
         return trimmed
+    }
+
+    // Strips the `User said: "..."` wrapper added by the speech recognizer so
+    // demo matching sees the raw transcript. Falls back to the input as-is if
+    // the wrapper isn't present.
+    private fun extractRawSpeech(wrapped: String): String? {
+        val m = Regex("^User said: \"(.*)\"\\s*$").find(wrapped.trim())
+        return m?.groupValues?.get(1) ?: wrapped
     }
 
     private fun formatHistoryForRouter(maxTurns: Int = 6): String {
