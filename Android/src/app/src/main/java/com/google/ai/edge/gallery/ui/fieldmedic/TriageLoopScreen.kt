@@ -14,6 +14,7 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -33,8 +34,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Hearing
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.Icon
@@ -51,7 +56,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -62,6 +71,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.google.ai.edge.gallery.customtasks.fieldmedic.DetectionBox
 import com.google.ai.edge.gallery.ui.theme.appFontFamily
 import kotlinx.coroutines.delay
 import java.util.concurrent.Executors
@@ -83,7 +93,18 @@ fun TriageLoopScreen(
     val isFlashOn by viewModel.isFlashOn.collectAsState()
     val loopState by viewModel.loopState.collectAsState()
     val isProcessing by viewModel.isProcessing.collectAsState()
+    val isListening by viewModel.isListening.collectAsState()
+    val isSpeaking by viewModel.ttsManager.isSpeaking.collectAsState()
     val frameGateStatus by viewModel.frameGateStatus.collectAsState()
+    val detections by viewModel.latestDetections.collectAsState()
+    val cameraFacing by viewModel.cameraFacing.collectAsState()
+
+    val activity = when {
+        isSpeaking -> LoopActivity.SPEAKING
+        isProcessing -> LoopActivity.PROCESSING
+        isListening -> LoopActivity.LISTENING
+        else -> LoopActivity.IDLE
+    }
 
     // Keep screen on
     DisposableEffect(Unit) {
@@ -114,10 +135,26 @@ fun TriageLoopScreen(
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
     var cameraControl by remember { mutableStateOf<androidx.camera.core.CameraControl?>(null) }
+    var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
 
     // Sync flash
     LaunchedEffect(isFlashOn, cameraControl) {
         cameraControl?.enableTorch(isFlashOn)
+    }
+
+    // Rebind camera whenever facing changes (after the first bind in the factory).
+    LaunchedEffect(cameraFacing, cameraProvider, previewViewRef, permissionsGranted) {
+        val provider = cameraProvider ?: return@LaunchedEffect
+        val pv = previewViewRef ?: return@LaunchedEffect
+        if (!permissionsGranted) return@LaunchedEffect
+        bindCamera(
+            provider = provider,
+            previewView = pv,
+            lifecycleOwner = lifecycleOwner,
+            imageCapture = imageCapture,
+            facing = cameraFacing,
+            onCameraControl = { cameraControl = it },
+        )
     }
 
     // Periodic frame capture
@@ -168,32 +205,33 @@ fun TriageLoopScreen(
                         )
                         scaleType = PreviewView.ScaleType.FILL_CENTER
                     }
+                    previewViewRef = previewView
 
                     val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                     cameraProviderFuture.addListener({
                         val provider = cameraProviderFuture.get()
                         cameraProvider = provider
-
-                        val preview = Preview.Builder().build().also {
-                            it.surfaceProvider = previewView.surfaceProvider
-                        }
-
-                        try {
-                            provider.unbindAll()
-                            val camera = provider.bindToLifecycle(
-                                lifecycleOwner,
-                                CameraSelector.DEFAULT_BACK_CAMERA,
-                                preview,
-                                imageCapture,
-                            )
-                            cameraControl = camera.cameraControl
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Camera bind failed", e)
-                        }
+                        bindCamera(
+                            provider = provider,
+                            previewView = previewView,
+                            lifecycleOwner = lifecycleOwner,
+                            imageCapture = imageCapture,
+                            facing = cameraFacing,
+                            onCameraControl = { cameraControl = it },
+                        )
                     }, ContextCompat.getMainExecutor(ctx))
 
                     previewView
                 },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+
+        // Layer 1.5: Detection annotation overlay (bounding boxes)
+        if (detections.isNotEmpty()) {
+            DetectionOverlay(
+                detections = detections,
+                mirrored = cameraFacing == CameraFacing.FRONT,
                 modifier = Modifier.fillMaxSize(),
             )
         }
@@ -211,12 +249,16 @@ fun TriageLoopScreen(
                 isFlashOn = isFlashOn,
                 onMuteToggle = { viewModel.toggleMute() },
                 onFlashToggle = { viewModel.toggleFlash() },
+                onFlipCamera = { viewModel.toggleCameraFacing() },
                 onSos = onExit,
             )
 
+            // Activity status pill (LISTENING / SPEAKING / PROCESSING)
+            ActivityPill(activity = activity, modifier = Modifier.padding(top = 4.dp))
+
             Spacer(Modifier.weight(1f))
 
-            // Frame gate indicator + VLM description pill
+            // Frame gate indicator + face count
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -224,7 +266,6 @@ fun TriageLoopScreen(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Gate status dot
                 if (frameGateStatus != null) {
                     Box(
                         modifier = Modifier
@@ -236,7 +277,9 @@ fun TriageLoopScreen(
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        text = if (frameGateStatus == true) "PASS" else "DROP",
+                        text = if (frameGateStatus == true)
+                            "FACE DETECTED (${detections.size})"
+                        else "NO FACE",
                         color = if (frameGateStatus == true) FMGreenBright else FMRed,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
@@ -246,7 +289,6 @@ fun TriageLoopScreen(
                     Spacer(Modifier.width(12.dp))
                 }
 
-                // VLM description
                 if (vlmDescription.isNotBlank()) {
                     Text(
                         text = vlmDescription,
@@ -289,19 +331,6 @@ fun TriageLoopScreen(
 
             Spacer(Modifier.height(16.dp))
 
-            // Processing indicator
-            if (isProcessing) {
-                Text(
-                    "Processing...",
-                    color = FMTextSub,
-                    fontSize = 12.sp,
-                    fontFamily = appFontFamily,
-                    modifier = Modifier.fillMaxWidth(),
-                    textAlign = TextAlign.Center,
-                )
-                Spacer(Modifier.height(8.dp))
-            }
-
             // YES / NO buttons
             Row(
                 modifier = Modifier
@@ -310,7 +339,6 @@ fun TriageLoopScreen(
                     .padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                // YES
                 androidx.compose.material3.FilledIconButton(
                     onClick = { viewModel.onYesPressed() },
                     modifier = Modifier
@@ -331,7 +359,6 @@ fun TriageLoopScreen(
                     )
                 }
 
-                // NO
                 androidx.compose.material3.FilledIconButton(
                     onClick = { viewModel.onNoPressed() },
                     modifier = Modifier
@@ -357,11 +384,74 @@ fun TriageLoopScreen(
 }
 
 @Composable
+private fun DetectionOverlay(
+    detections: List<DetectionBox>,
+    mirrored: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        detections.forEach { d ->
+            val l = if (mirrored) (1f - d.right) else d.left
+            val r = if (mirrored) (1f - d.left) else d.right
+            val left = l * size.width
+            val top = d.top * size.height
+            val right = r * size.width
+            val bottom = d.bottom * size.height
+            drawRect(
+                color = Color(0xFF43A047),
+                topLeft = Offset(left, top),
+                size = Size(right - left, bottom - top),
+                style = Stroke(width = 4f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ActivityPill(activity: LoopActivity, modifier: Modifier = Modifier) {
+    if (activity == LoopActivity.IDLE) return
+    val (text, color, icon) = when (activity) {
+        LoopActivity.LISTENING -> Triple("LISTENING", FMGreenBright, Icons.Filled.Hearing)
+        LoopActivity.SPEAKING -> Triple("SPEAKING", FMRed, Icons.Filled.GraphicEq)
+        LoopActivity.PROCESSING -> Triple("THINKING", FMTextSub, Icons.Filled.HourglassTop)
+        LoopActivity.IDLE -> return
+    }
+    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color.Black.copy(alpha = 0.7f))
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(color),
+            )
+            Spacer(Modifier.width(8.dp))
+            Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = text,
+                color = color,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = appFontFamily,
+                letterSpacing = 1.5.sp,
+            )
+        }
+    }
+}
+
+@Composable
 private fun TopBar(
     isMuted: Boolean,
     isFlashOn: Boolean,
     onMuteToggle: () -> Unit,
     onFlashToggle: () -> Unit,
+    onFlipCamera: () -> Unit,
     onSos: () -> Unit,
 ) {
     Row(
@@ -370,7 +460,6 @@ private fun TopBar(
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // SOS button
         IconButton(
             onClick = onSos,
             colors = IconButtonDefaults.iconButtonColors(
@@ -388,7 +477,24 @@ private fun TopBar(
 
         Spacer(Modifier.weight(1f))
 
-        // Mute toggle
+        // Camera flip
+        IconButton(
+            onClick = onFlipCamera,
+            colors = IconButtonDefaults.iconButtonColors(
+                containerColor = Color.Black.copy(alpha = 0.5f),
+                contentColor = FMText,
+            ),
+            modifier = Modifier.size(44.dp),
+        ) {
+            Icon(
+                Icons.Filled.Cameraswitch,
+                contentDescription = "Flip camera",
+                modifier = Modifier.size(24.dp),
+            )
+        }
+
+        Spacer(Modifier.width(8.dp))
+
         IconButton(
             onClick = onMuteToggle,
             colors = IconButtonDefaults.iconButtonColors(
@@ -406,7 +512,6 @@ private fun TopBar(
 
         Spacer(Modifier.width(8.dp))
 
-        // Flash toggle
         IconButton(
             onClick = onFlashToggle,
             colors = IconButtonDefaults.iconButtonColors(
@@ -421,6 +526,33 @@ private fun TopBar(
                 modifier = Modifier.size(24.dp),
             )
         }
+    }
+}
+
+private fun bindCamera(
+    provider: ProcessCameraProvider,
+    previewView: PreviewView,
+    lifecycleOwner: androidx.lifecycle.LifecycleOwner,
+    imageCapture: ImageCapture,
+    facing: CameraFacing,
+    onCameraControl: (androidx.camera.core.CameraControl) -> Unit,
+) {
+    val preview = Preview.Builder().build().also {
+        it.surfaceProvider = previewView.surfaceProvider
+    }
+    val selector = if (facing == CameraFacing.FRONT)
+        CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+    try {
+        provider.unbindAll()
+        val camera = provider.bindToLifecycle(
+            lifecycleOwner,
+            selector,
+            preview,
+            imageCapture,
+        )
+        onCameraControl(camera.cameraControl)
+    } catch (e: Exception) {
+        Log.e(TAG, "Camera bind failed", e)
     }
 }
 

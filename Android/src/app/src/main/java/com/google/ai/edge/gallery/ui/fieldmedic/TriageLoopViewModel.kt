@@ -9,8 +9,9 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.google.ai.edge.gallery.customtasks.fieldmedic.EfficientDetFrameGate
+import com.google.ai.edge.gallery.customtasks.fieldmedic.DetectionBox
 import com.google.ai.edge.gallery.customtasks.fieldmedic.FrameGate
+import com.google.ai.edge.gallery.customtasks.fieldmedic.MlKitFaceFrameGate
 import com.google.ai.edge.gallery.customtasks.fieldmedic.StubWoundDescriber
 import com.google.ai.edge.gallery.customtasks.fieldmedic.WoundDescriber
 import com.google.ai.edge.litertlm.Backend
@@ -44,22 +45,40 @@ private const val MODEL_PATH = "/data/local/tmp/gemma-4-E2B-it.litertlm"
 private const val SAMPLE_RATE = 16000
 private const val AUDIO_CHUNK_SEC = 7
 private const val FRAME_INTERVAL_MS = 5000L
-private const val EFFICIENTDET_PATH = "/data/local/tmp/efficientdet_lite0_detection.tflite"
 
 private val SYSTEM_PROMPT = """
 You are an emergency field medic dispatcher guiding a person through treating an injury in a remote location with no medical help available.
 
-Rules:
-- Ask ONE question at a time
-- Keep responses under 2 sentences
-- Use simple, direct language
-- If you receive audio, listen to what the person said and respond accordingly
-- If you receive an image, assess the visible injury
-- If the user presses YES or NO, incorporate that answer and continue
-- Start by asking what happened
+CRITICAL RULES:
+- Every question MUST be strictly binary: either "yes / no" OR "option 1 / option 2".
+- NEVER ask open-ended questions. NEVER ask "what" or "how" or "describe".
+- Phrase questions so they can be answered by tapping YES or NO.
+- Examples of GOOD questions:
+  * "Is there bleeding? YES or NO"
+  * "Is the person conscious? YES or NO"
+  * "Is the wound on an arm or a leg? Option 1: arm. Option 2: leg."
+- Examples of BAD questions (NEVER ask these):
+  * "What happened?"
+  * "Where is the injury?"
+  * "Can you describe the wound?"
+- Ask ONE question at a time.
+- Keep each response to ONE short sentence plus the YES/NO or option choice.
+- Use simple, direct language.
+- If you receive audio, listen to what the person said and ask the next binary question.
+- If you receive an image, assess the visible injury and ask the next binary question.
+- If the user presses YES or NO, incorporate it and ask the next binary question.
+- Start by asking a binary question to narrow down the situation, e.g. "Is the person conscious? YES or NO."
 """.trimIndent()
 
 enum class LoopState { INITIALIZING, RUNNING, ERROR }
+
+enum class CameraFacing { BACK, FRONT }
+
+/**
+ * What the loop is currently doing — used to give the user clear feedback
+ * about whether the system is hearing them or talking to them.
+ */
+enum class LoopActivity { LISTENING, SPEAKING, PROCESSING, IDLE }
 
 sealed class TriageTurn {
     data class AudioTurn(val wavBytes: ByteArray) : TriageTurn()
@@ -78,9 +97,13 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     private val _isProcessing = MutableStateFlow(false)
     val isProcessing: StateFlow<Boolean> = _isProcessing
 
-    // Frame gate status: true = passed (person detected), false = dropped, null = no frame yet
+    // Frame gate status: true = passed (face detected), false = dropped, null = no frame yet
     private val _frameGateStatus = MutableStateFlow<Boolean?>(null)
     val frameGateStatus: StateFlow<Boolean?> = _frameGateStatus
+
+    // Latest detections from the frame gate (for on-screen annotation overlay).
+    private val _latestDetections = MutableStateFlow<List<DetectionBox>>(emptyList())
+    val latestDetections: StateFlow<List<DetectionBox>> = _latestDetections
 
     private val _isMuted = MutableStateFlow(false)
     val isMuted: StateFlow<Boolean> = _isMuted
@@ -88,8 +111,15 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     private val _isFlashOn = MutableStateFlow(false)
     val isFlashOn: StateFlow<Boolean> = _isFlashOn
 
+    private val _cameraFacing = MutableStateFlow(CameraFacing.BACK)
+    val cameraFacing: StateFlow<CameraFacing> = _cameraFacing
+
     private val _loopState = MutableStateFlow(LoopState.INITIALIZING)
     val loopState: StateFlow<LoopState> = _loopState
+
+    // True while the mic is actively recording a chunk for the next turn.
+    private val _isListening = MutableStateFlow(false)
+    val isListening: StateFlow<Boolean> = _isListening
 
     // --- Internal ---
     private var engine: Engine? = null
@@ -100,9 +130,9 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     @Volatile private var latestFrameBitmap: Bitmap? = null
     @Volatile private var latestVlmDesc: String = ""
     private val frameGate: FrameGate = try {
-        EfficientDetFrameGate(EFFICIENTDET_PATH)
+        MlKitFaceFrameGate()
     } catch (e: Exception) {
-        Log.e(TAG, "EfficientDet failed to load, using stub gate", e)
+        Log.e(TAG, "Face detector failed to load, using stub gate", e)
         com.google.ai.edge.gallery.customtasks.fieldmedic.StubFrameGate()
     }
     private val woundDescriber: WoundDescriber = StubWoundDescriber()
@@ -280,6 +310,7 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
         isRecording = true
         recorder.startRecording()
         audioRecord = recorder
+        _isListening.value = true
 
         val stream = ByteArrayOutputStream()
         val buffer = ByteArray(minBuf)
@@ -299,6 +330,7 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
         recorder.release()
         audioRecord = null
         isRecording = false
+        _isListening.value = false
 
         val pcm = stream.toByteArray()
         if (pcm.isEmpty()) return null
@@ -311,9 +343,10 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     fun onFrameCaptured(bitmap: Bitmap) {
         viewModelScope.launch(Dispatchers.Default) {
             val scaled = scaleBitmap(bitmap, 512)
-            val passed = frameGate.shouldProcess(scaled)
-            _frameGateStatus.value = passed
-            if (passed) {
+            val result = frameGate.analyze(scaled)
+            _frameGateStatus.value = result.passed
+            _latestDetections.value = result.detections
+            if (result.passed) {
                 val desc = woundDescriber.describe(scaled)
                 _vlmDescription.value = desc
                 // Store as passive context — will be attached to next user-triggered turn
@@ -343,6 +376,11 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
 
     fun toggleFlash() {
         _isFlashOn.value = !_isFlashOn.value
+    }
+
+    fun toggleCameraFacing() {
+        _cameraFacing.value =
+            if (_cameraFacing.value == CameraFacing.BACK) CameraFacing.FRONT else CameraFacing.BACK
     }
 
     // --- Helpers ---

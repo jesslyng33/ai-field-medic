@@ -5,46 +5,105 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.util.Log
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.face.FaceDetection
+import com.google.mlkit.vision.face.FaceDetector
+import com.google.mlkit.vision.face.FaceDetectorOptions
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.tensorflow.lite.InterpreterApi
-import org.tensorflow.lite.support.common.FileUtil
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.coroutines.resume
 
 private const val TAG = "FrameGate"
 
-/** Decides whether a camera frame is worth processing (EfficientDet gate). */
+/** Normalized bounding box (0..1) plus label/score, relative to the analyzed bitmap. */
+data class DetectionBox(
+    val label: String,
+    val score: Float,
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float,
+)
+
+data class FrameGateResult(
+    val passed: Boolean,
+    val detections: List<DetectionBox>,
+)
+
+/** Decides whether a camera frame is worth processing and returns what was seen. */
 interface FrameGate {
-    fun shouldProcess(bitmap: Bitmap): Boolean
+    suspend fun analyze(bitmap: Bitmap): FrameGateResult
     fun close()
 }
 
-/** Stub — always passes. Swap with EfficientDet implementation later. */
+/** Stub — always passes, no detections. */
 class StubFrameGate : FrameGate {
-    override fun shouldProcess(bitmap: Bitmap): Boolean = true
+    override suspend fun analyze(bitmap: Bitmap): FrameGateResult =
+        FrameGateResult(passed = true, detections = emptyList())
     override fun close() {}
 }
 
 /**
- * EfficientDet Lite0 frame gate.
- * Runs object detection and passes frames that contain a person or relevant object
- * above the confidence threshold.
+ * ML Kit face-detection gate. Frames pass only if a human face is detected.
+ * Returns bounding boxes (normalized to bitmap dims) for overlay/debug display.
+ */
+class MlKitFaceFrameGate : FrameGate {
+
+    private val detector: FaceDetector = FaceDetection.getClient(
+        FaceDetectorOptions.Builder()
+            .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+            .setLandmarkMode(FaceDetectorOptions.LANDMARK_MODE_NONE)
+            .setClassificationMode(FaceDetectorOptions.CLASSIFICATION_MODE_NONE)
+            .setMinFaceSize(0.1f)
+            .build()
+    )
+
+    override suspend fun analyze(bitmap: Bitmap): FrameGateResult =
+        suspendCancellableCoroutine { cont ->
+            val image = InputImage.fromBitmap(bitmap, 0)
+            detector.process(image)
+                .addOnSuccessListener { faces ->
+                    val w = bitmap.width.toFloat().coerceAtLeast(1f)
+                    val h = bitmap.height.toFloat().coerceAtLeast(1f)
+                    val boxes = faces.map { face ->
+                        val r = face.boundingBox
+                        DetectionBox(
+                            label = "face",
+                            score = face.trackingId?.let { 1f } ?: 1f,
+                            left = (r.left / w).coerceIn(0f, 1f),
+                            top = (r.top / h).coerceIn(0f, 1f),
+                            right = (r.right / w).coerceIn(0f, 1f),
+                            bottom = (r.bottom / h).coerceIn(0f, 1f),
+                        )
+                    }
+                    cont.resume(FrameGateResult(passed = boxes.isNotEmpty(), detections = boxes))
+                }
+                .addOnFailureListener { e ->
+                    Log.e(TAG, "Face detection failed", e)
+                    cont.resume(FrameGateResult(passed = false, detections = emptyList()))
+                }
+        }
+
+    override fun close() {
+        try { detector.close() } catch (_: Exception) {}
+    }
+}
+
+/**
+ * EfficientDet Lite0 frame gate. Kept for reference / fallback testing.
  *
  * EfficientDet Lite0 input:  320x320 RGB uint8
- * EfficientDet Lite0 output:
- *   0: detection boxes     [1, 25, 4] float32
- *   1: detection classes   [1, 25]    float32
- *   2: detection scores    [1, 25]    float32
- *   3: number of detections [1]       float32
+ * Output: boxes [1,25,4], classes [1,25], scores [1,25], num [1].
  */
 class EfficientDetFrameGate(modelPath: String) : FrameGate {
 
     private val interpreter: InterpreterApi
-
-    // COCO class IDs we care about (0-indexed):
-    // 0 = person
-    private val relevantClasses = setOf(0)
+    private val relevantClasses = setOf(0) // COCO: 0 = person
     private val confidenceThreshold = 0.3f
     private val inputSize = 320
+    private val cocoLabels = mapOf(0 to "person")
 
     init {
         val options = InterpreterApi.Options()
@@ -53,16 +112,23 @@ class EfficientDetFrameGate(modelPath: String) : FrameGate {
         Log.i(TAG, "EfficientDet loaded from $modelPath")
     }
 
-    override fun shouldProcess(bitmap: Bitmap): Boolean {
+    override suspend fun analyze(bitmap: Bitmap): FrameGateResult {
         return try {
             val input = preprocessBitmap(bitmap)
-            val detections = runDetection(input)
-            detections.any { det ->
-                det.classId in relevantClasses && det.score >= confidenceThreshold
-            }
+            val raw = runDetection(input)
+            val boxes = raw
+                .filter { it.classId in relevantClasses && it.score >= confidenceThreshold }
+                .map {
+                    DetectionBox(
+                        label = cocoLabels[it.classId] ?: "?",
+                        score = it.score,
+                        left = it.left, top = it.top, right = it.right, bottom = it.bottom,
+                    )
+                }
+            FrameGateResult(passed = boxes.isNotEmpty(), detections = boxes)
         } catch (e: Exception) {
             Log.e(TAG, "Detection failed, passing frame", e)
-            true // fail open — if detection crashes, still process the frame
+            FrameGateResult(passed = true, detections = emptyList())
         }
     }
 
@@ -71,7 +137,6 @@ class EfficientDetFrameGate(modelPath: String) : FrameGate {
     }
 
     private fun preprocessBitmap(bitmap: Bitmap): ByteBuffer {
-        // Scale to 320x320
         val scaled = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(scaled)
         val scaleX = inputSize.toFloat() / bitmap.width
@@ -79,7 +144,6 @@ class EfficientDetFrameGate(modelPath: String) : FrameGate {
         val matrix = Matrix().apply { setScale(scaleX, scaleY) }
         canvas.drawBitmap(bitmap, matrix, null)
 
-        // Convert to RGB uint8 ByteBuffer
         val buffer = ByteBuffer.allocateDirect(1 * inputSize * inputSize * 3)
         buffer.order(ByteOrder.nativeOrder())
 
@@ -97,10 +161,8 @@ class EfficientDetFrameGate(modelPath: String) : FrameGate {
         return buffer
     }
 
-    private fun runDetection(input: ByteBuffer): List<Detection> {
+    private fun runDetection(input: ByteBuffer): List<RawDet> {
         val maxDetections = 25
-
-        // Output buffers
         val boxes = Array(1) { Array(maxDetections) { FloatArray(4) } }
         val classes = Array(1) { FloatArray(maxDetections) }
         val scores = Array(1) { FloatArray(maxDetections) }
@@ -112,21 +174,26 @@ class EfficientDetFrameGate(modelPath: String) : FrameGate {
             2 to scores,
             3 to numDetections,
         )
-
         interpreter.runForMultipleInputsOutputs(arrayOf(input), outputs)
 
         val count = numDetections[0].toInt().coerceAtMost(maxDetections)
-        val detections = mutableListOf<Detection>()
+        val out = mutableListOf<RawDet>()
         for (i in 0 until count) {
-            detections.add(
-                Detection(
+            val b = boxes[0][i] // [ymin, xmin, ymax, xmax] normalized
+            out.add(
+                RawDet(
                     classId = classes[0][i].toInt(),
                     score = scores[0][i],
+                    left = b[1], top = b[0], right = b[3], bottom = b[2],
                 )
             )
         }
-        return detections
+        return out
     }
 
-    private data class Detection(val classId: Int, val score: Float)
+    private data class RawDet(
+        val classId: Int,
+        val score: Float,
+        val left: Float, val top: Float, val right: Float, val bottom: Float,
+    )
 }
