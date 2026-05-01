@@ -163,26 +163,29 @@ fun TriageLoopScreen(
         )
     }
 
-    // Periodic frame capture
+    // Capture a frame every time Gemma's TTS finishes speaking
     LaunchedEffect(permissionsGranted, loopState) {
         if (!permissionsGranted || loopState != LoopState.RUNNING) return@LaunchedEffect
-        while (true) {
-            delay(FRAME_INTERVAL_MS)
-            imageCapture.takePicture(
-                cameraExecutor,
-                object : ImageCapture.OnImageCapturedCallback() {
-                    override fun onCaptureSuccess(imageProxy: ImageProxy) {
-                        val bitmap = imageProxyToBitmap(imageProxy)
-                        imageProxy.close()
-                        if (bitmap != null) {
-                            viewModel.onFrameCaptured(bitmap)
+        var wasSpeaking = false
+        viewModel.ttsManager.isSpeaking.collect { speaking ->
+            if (wasSpeaking && !speaking) {
+                imageCapture.takePicture(
+                    cameraExecutor,
+                    object : ImageCapture.OnImageCapturedCallback() {
+                        override fun onCaptureSuccess(imageProxy: ImageProxy) {
+                            val bitmap = imageProxyToBitmap(imageProxy)
+                            imageProxy.close()
+                            if (bitmap != null) {
+                                viewModel.onFrameCaptured(bitmap)
+                            }
                         }
-                    }
-                    override fun onError(exception: ImageCaptureException) {
-                        Log.e(TAG, "Frame capture failed", exception)
-                    }
-                },
-            )
+                        override fun onError(exception: ImageCaptureException) {
+                            Log.e(TAG, "Frame capture failed", exception)
+                        }
+                    },
+                )
+            }
+            wasSpeaking = speaking
         }
     }
 

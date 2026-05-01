@@ -15,6 +15,7 @@ import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.gallery.customtasks.fieldmedic.DetectionBox
 import com.google.ai.edge.gallery.customtasks.fieldmedic.FrameGate
 import com.google.ai.edge.gallery.customtasks.fieldmedic.MlKitFaceFrameGate
+import com.google.ai.edge.gallery.customtasks.fieldmedic.FastVlmWoundDescriber
 import com.google.ai.edge.gallery.customtasks.fieldmedic.StubWoundDescriber
 import com.google.ai.edge.gallery.customtasks.fieldmedic.WoundDescriber
 import com.google.ai.edge.litertlm.Backend
@@ -46,26 +47,12 @@ private const val FRAME_INTERVAL_MS = 5000L
 private const val OPENING_LINE = "What's your emergency?"
 
 private val SYSTEM_PROMPT = """
-You are an emergency field medic dispatcher guiding a person through treating an injury in a remote location with no medical help available.
+You are a calm, helpful health medic guiding someone through a medical situation in the field.
 
-CRITICAL RULES:
-- Every question MUST be answerable with yes or no.
-- NEVER append "YES or NO", "yes or no", "Yes or No", or any variation to the end of a sentence. This is forbidden. End the question with a question mark only.
-- NEVER ask open-ended questions. NEVER ask "what" or "how" or "describe".
-- Examples of GOOD questions:
-  * "Is there bleeding?"
-  * "Is the person conscious?"
-  * "Is the wound on the arm?"
-- Examples of BAD questions (NEVER ask these):
-  * "What happened?"
-  * "Where is the injury?"
-  * "Can you describe the wound?"
-- Ask ONE question at a time.
-- Keep each response to ONE short sentence.
 - Use simple, direct language.
-- If you receive an image, assess the visible injury and ask the next binary question.
-- If the user presses YES or NO, incorporate it and ask the next binary question.
-- Start by asking a binary question to narrow down the situation, e.g. "Is the person conscious?"
+- Keep responses short — one or two sentences.
+- You can ask questions, give instructions, or describe what you see.
+- If you receive an image, look at it and respond to what you see.
 """.trimIndent()
 
 enum class LoopState { INITIALIZING, RUNNING, ERROR }
@@ -139,12 +126,13 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     @Volatile private var latestFrameBitmap: Bitmap? = null
     @Volatile private var latestVlmDesc: String = ""
 
-    private val frameGate: FrameGate = try {
-        MlKitFaceFrameGate()
-    } catch (e: Exception) {
-        Log.e(TAG, "Face detector failed to load, using stub gate", e)
+    // Gate stubbed — all frames pass through. Real impls (MlKitFaceFrameGate,
+    // EfficientDetFrameGate) are still in FrameGate.kt for later use.
+    private val frameGate: FrameGate =
         com.google.ai.edge.gallery.customtasks.fieldmedic.StubFrameGate()
-    }
+    // Describer stubbed — Gemma is multimodal and sees images directly, no need
+    // for a separate VLM description step. FastVlmWoundDescriber is still in
+    // WoundDescriber.kt for later use.
     private val woundDescriber: WoundDescriber = StubWoundDescriber()
     private val turnQueue = Channel<TriageTurn>(capacity = 8)
 
@@ -301,14 +289,15 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
             try {
                 val contents = mutableListOf<Content>()
 
-                // Attach latest camera context if available
+                // Attach latest camera frame if available — Gemma sees it directly
                 val frame = latestFrameBitmap
-                val desc = latestVlmDesc
-                if (frame != null && desc.isNotBlank()) {
+                if (frame != null) {
+                    Log.i(TAG, "→→ Sending to Gemma | image attached | frame_size=${frame.width}x${frame.height}")
                     contents.add(Content.ImageBytes(bitmapToPng(frame)))
-                    contents.add(Content.Text("[Visual context: $desc]"))
                     latestFrameBitmap = null
-                    logMessage(TriageRole.SYSTEM, "Visual: $desc")
+                    logMessage(TriageRole.SYSTEM, "Image attached to turn")
+                } else {
+                    Log.i(TAG, "→→ Sending to Gemma | no image attached")
                 }
 
                 when (turn) {
@@ -359,12 +348,12 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
             val result = frameGate.analyze(scaled)
             _frameGateStatus.value = result.passed
             _latestDetections.value = result.detections
-            if (result.passed) {
-                val desc = woundDescriber.describe(scaled)
-                _vlmDescription.value = desc
-                latestFrameBitmap = scaled
-                latestVlmDesc = desc
-            }
+            // Stub gate always passes — store the frame for the next Gemma turn.
+            // No describer call: Gemma sees the image directly.
+            latestFrameBitmap = scaled
+            _vlmDescription.value = ""
+            latestVlmDesc = ""
+            Log.i(TAG, "Frame captured (${scaled.width}x${scaled.height}) — queued for Gemma")
         }
     }
 
@@ -459,6 +448,7 @@ Report:
         }
         ttsManager.shutdown()
         frameGate.close()
+        try { woundDescriber.close() } catch (_: Exception) {}
         try { conversation?.close() } catch (_: Exception) {}
         try { engine?.close() } catch (_: Exception) {}
     }
