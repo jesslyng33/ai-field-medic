@@ -1,11 +1,14 @@
 package com.google.ai.edge.gallery.ui.fieldmedic
 
 import android.app.Application
+import android.content.Intent
 import android.graphics.Bitmap
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
-import android.os.SystemClock
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -31,22 +34,15 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 private const val TAG = "TriageLoopVM"
 private const val MODEL_PATH = "/data/local/tmp/gemma-4-E2B-it.litertlm"
-private const val SAMPLE_RATE = 16000
-private const val AUDIO_CHUNK_SEC = 7
 private const val FRAME_INTERVAL_MS = 5000L
-// RMS below this = silence. 16-bit PCM max is 32767; speech is typically 1000+.
-private const val SILENCE_RMS_THRESHOLD = 500
 private const val OPENING_LINE = "What's your emergency?"
 
 private val SYSTEM_PROMPT = """
@@ -67,7 +63,6 @@ CRITICAL RULES:
 - Ask ONE question at a time.
 - Keep each response to ONE short sentence.
 - Use simple, direct language.
-- If you receive audio, listen to what the person said and ask the next binary question.
 - If you receive an image, assess the visible injury and ask the next binary question.
 - If the user presses YES or NO, incorporate it and ask the next binary question.
 - Start by asking a binary question to narrow down the situation, e.g. "Is the person conscious?"
@@ -77,14 +72,9 @@ enum class LoopState { INITIALIZING, RUNNING, ERROR }
 
 enum class CameraFacing { BACK, FRONT }
 
-/**
- * What the loop is currently doing — used to give the user clear feedback
- * about whether the system is hearing them or talking to them.
- */
 enum class LoopActivity { LISTENING, SPEAKING, PROCESSING, IDLE }
 
 sealed class TriageTurn {
-    data class AudioTurn(val wavBytes: ByteArray) : TriageTurn()
     data class TouchTurn(val input: String) : TriageTurn()
 }
 
@@ -94,17 +84,18 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     private val _currentPrompt = MutableStateFlow("Initializing...")
     val currentPrompt: StateFlow<String> = _currentPrompt
 
+    private val _userTranscript = MutableStateFlow("")
+    val userTranscript: StateFlow<String> = _userTranscript
+
     private val _vlmDescription = MutableStateFlow("")
     val vlmDescription: StateFlow<String> = _vlmDescription
 
     private val _isProcessing = MutableStateFlow(false)
     val isProcessing: StateFlow<Boolean> = _isProcessing
 
-    // Frame gate status: true = passed (face detected), false = dropped, null = no frame yet
     private val _frameGateStatus = MutableStateFlow<Boolean?>(null)
     val frameGateStatus: StateFlow<Boolean?> = _frameGateStatus
 
-    // Latest detections from the frame gate (for on-screen annotation overlay).
     private val _latestDetections = MutableStateFlow<List<DetectionBox>>(emptyList())
     val latestDetections: StateFlow<List<DetectionBox>> = _latestDetections
 
@@ -120,7 +111,6 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     private val _loopState = MutableStateFlow(LoopState.INITIALIZING)
     val loopState: StateFlow<LoopState> = _loopState
 
-    // True while the mic is actively recording a chunk for the next turn.
     private val _isListening = MutableStateFlow(false)
     val isListening: StateFlow<Boolean> = _isListening
 
@@ -129,9 +119,9 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     private var conversation: Conversation? = null
     val ttsManager = TtsManager(application)
 
-    // Latest camera context (updated passively, attached to next user turn)
     @Volatile private var latestFrameBitmap: Bitmap? = null
     @Volatile private var latestVlmDesc: String = ""
+
     private val frameGate: FrameGate = try {
         MlKitFaceFrameGate()
     } catch (e: Exception) {
@@ -141,18 +131,14 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     private val woundDescriber: WoundDescriber = StubWoundDescriber()
     private val turnQueue = Channel<TriageTurn>(capacity = 8)
 
-    private var audioJob: Job? = null
     private var turnJob: Job? = null
-    private var audioRecord: AudioRecord? = null
-    @Volatile private var isRecording = false
-
+    private var speechRecognizer: SpeechRecognizer? = null
     private var started = false
 
     fun startLoop() {
         if (started) return
         started = true
 
-        // Initialize engine on background thread
         viewModelScope.launch(Dispatchers.Default) {
             try {
                 initEngine()
@@ -169,12 +155,29 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                 return@launch
             }
 
-            // Start turn processor
             turnJob = launch(Dispatchers.Default) { processTurns() }
-
-            // Start audio recording
-            audioJob = launch(Dispatchers.IO) { recordContinuously() }
         }
+
+        // Cancel recognition when TTS starts speaking (prevent feedback)
+        viewModelScope.launch {
+            ttsManager.isSpeaking.collect { speaking ->
+                if (speaking) {
+                    Handler(Looper.getMainLooper()).post {
+                        speechRecognizer?.cancel()
+                        _isListening.value = false
+                    }
+                } else {
+                    // TTS just finished — restart listening after a brief settle
+                    if (_loopState.value == LoopState.RUNNING) {
+                        delay(400)
+                        Handler(Looper.getMainLooper()).post { startListening() }
+                    }
+                }
+            }
+        }
+
+        // Set up speech recognition on main thread
+        Handler(Looper.getMainLooper()).post { setupSpeechRecognizer() }
     }
 
     private fun initEngine() {
@@ -187,24 +190,92 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
             maxNumTokens = 2048,
             cacheDir = app.getExternalFilesDir(null)?.absolutePath,
         )
-
         val eng = Engine(config)
         eng.initialize()
-
         val conv = eng.createConversation(
             ConversationConfig(
-                samplerConfig = SamplerConfig(
-                    topK = 40,
-                    topP = 0.95,
-                    temperature = 0.7,
-                ),
+                samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.7),
             )
         )
-
         engine = eng
         conversation = conv
-        Log.i(TAG, "Engine initialized with all backends")
+        Log.i(TAG, "Engine initialized")
     }
+
+    // --- Speech recognition ---
+
+    private fun setupSpeechRecognizer() {
+        val app = getApplication<Application>()
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(app)
+        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) { _isListening.value = true }
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() { _isListening.value = false }
+
+            override fun onPartialResults(partialResults: Bundle?) {
+                val partial = partialResults
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull() ?: return
+                _userTranscript.value = partial
+            }
+
+            override fun onResults(results: Bundle?) {
+                _isListening.value = false
+                val text = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull() ?: ""
+                if (text.isNotBlank()) {
+                    _userTranscript.value = text
+                    viewModelScope.launch {
+                        turnQueue.send(TriageTurn.TouchTurn("User said: \"$text\""))
+                        delay(2000)
+                        _userTranscript.value = ""
+                    }
+                }
+                startListeningDelayed()
+            }
+
+            override fun onError(error: Int) {
+                _isListening.value = false
+                Log.d(TAG, "SpeechRecognizer error code: $error")
+                startListeningDelayed()
+            }
+
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+
+        // Don't start listening immediately — wait for engine to be ready
+        viewModelScope.launch {
+            _loopState.collect { state ->
+                if (state == LoopState.RUNNING && !ttsManager.isSpeaking.value) {
+                    Handler(Looper.getMainLooper()).post { startListening() }
+                }
+            }
+        }
+    }
+
+    private fun startListening() {
+        if (ttsManager.isSpeaking.value || _loopState.value != LoopState.RUNNING) return
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+        }
+        speechRecognizer?.startListening(intent)
+    }
+
+    private fun startListeningDelayed() {
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (ttsManager.isSpeaking.value) return@postDelayed
+            startListening()
+        }, 300)
+    }
+
+    // --- Turn processing ---
 
     private suspend fun processTurns() {
         for (turn in turnQueue) {
@@ -218,18 +289,11 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
                 if (frame != null && desc.isNotBlank()) {
                     contents.add(Content.ImageBytes(bitmapToPng(frame)))
                     contents.add(Content.Text("[Visual context: $desc]"))
-                    latestFrameBitmap = null // consume it
+                    latestFrameBitmap = null
                 }
 
-                // Add the user's actual input
                 when (turn) {
-                    is TriageTurn.AudioTurn -> {
-                        contents.add(Content.AudioBytes(turn.wavBytes))
-                        contents.add(Content.Text("The user just spoke. Listen to their audio and respond."))
-                    }
-                    is TriageTurn.TouchTurn -> {
-                        contents.add(Content.Text(turn.input))
-                    }
+                    is TriageTurn.TouchTurn -> contents.add(Content.Text(turn.input))
                 }
 
                 val response = sendTurn(contents)
@@ -252,97 +316,16 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
             conv.sendMessageAsync(
                 Contents.of(contents),
                 object : MessageCallback {
-                    override fun onMessage(message: Message) {
-                        sb.append(message.toString())
-                    }
-                    override fun onDone() {
-                        Log.i(TAG, "Turn done: ${sb.length} chars")
-                        cont.resume(sb.toString())
-                    }
+                    override fun onMessage(message: Message) { sb.append(message.toString()) }
+                    override fun onDone() { cont.resume(sb.toString()) }
                     override fun onError(throwable: Throwable) {
-                        if (throwable is CancellationException) {
-                            cont.cancel(throwable)
-                        } else {
-                            Log.e(TAG, "Inference error", throwable)
-                            cont.resumeWithException(throwable)
-                        }
+                        if (throwable is CancellationException) cont.cancel(throwable)
+                        else cont.resumeWithException(throwable)
                     }
                 },
                 emptyMap(),
             )
         }
-    }
-
-    // --- Audio recording ---
-
-    private suspend fun recordContinuously() {
-        while (viewModelScope.isActive) {
-            // Pause while TTS is speaking to avoid feedback
-            if (ttsManager.isSpeaking.value) {
-                delay(200)
-                continue
-            }
-            // Brief settle after TTS stops — lets the speaker echo die out
-            delay(300)
-
-            val wavBytes = recordChunk()
-            if (wavBytes != null && hasMeaningfulAudio(wavBytes)) {
-                turnQueue.send(TriageTurn.AudioTurn(wavBytes))
-            } else if (wavBytes != null) {
-                Log.d(TAG, "Audio chunk dropped — silence")
-            }
-        }
-    }
-
-    private fun recordChunk(): ByteArray? {
-        val minBuf = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-        )
-
-        val recorder = try {
-            AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                minBuf,
-            )
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Mic permission denied", e)
-            return null
-        }
-
-        isRecording = true
-        recorder.startRecording()
-        audioRecord = recorder
-        _isListening.value = true
-
-        val stream = ByteArrayOutputStream()
-        val buffer = ByteArray(minBuf)
-        val startMs = SystemClock.elapsedRealtime()
-
-        while (isRecording && SystemClock.elapsedRealtime() - startMs < AUDIO_CHUNK_SEC * 1000L) {
-            // Stop early if TTS starts speaking
-            if (ttsManager.isSpeaking.value) break
-
-            val bytesRead = recorder.read(buffer, 0, buffer.size)
-            if (bytesRead > 0) {
-                stream.write(buffer, 0, bytesRead)
-            }
-        }
-
-        recorder.stop()
-        recorder.release()
-        audioRecord = null
-        isRecording = false
-        _isListening.value = false
-
-        val pcm = stream.toByteArray()
-        if (pcm.isEmpty()) return null
-
-        return buildWav(pcm, SAMPLE_RATE)
     }
 
     // --- Frame capture ---
@@ -356,7 +339,6 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
             if (result.passed) {
                 val desc = woundDescriber.describe(scaled)
                 _vlmDescription.value = desc
-                // Store as passive context — will be attached to next user-triggered turn
                 latestFrameBitmap = scaled
                 latestVlmDesc = desc
             }
@@ -381,9 +363,7 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
         if (ttsManager.isMuted) ttsManager.stop()
     }
 
-    fun toggleFlash() {
-        _isFlashOn.value = !_isFlashOn.value
-    }
+    fun toggleFlash() { _isFlashOn.value = !_isFlashOn.value }
 
     fun toggleCameraFacing() {
         _cameraFacing.value =
@@ -391,25 +371,6 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     // --- Helpers ---
-
-    // Returns true if the WAV chunk contains speech above the silence threshold.
-    // Strips the 44-byte WAV header then computes RMS of 16-bit PCM samples.
-    private fun hasMeaningfulAudio(wav: ByteArray): Boolean {
-        if (wav.size <= 44) return false
-        val pcm = wav.copyOfRange(44, wav.size)
-        val buf = ByteBuffer.wrap(pcm).order(ByteOrder.LITTLE_ENDIAN)
-        var sumSquares = 0.0
-        var count = 0
-        while (buf.remaining() >= 2) {
-            val sample = buf.short.toDouble()
-            sumSquares += sample * sample
-            count++
-        }
-        if (count == 0) return false
-        val rms = Math.sqrt(sumSquares / count)
-        Log.d(TAG, "Audio RMS: $rms")
-        return rms >= SILENCE_RMS_THRESHOLD
-    }
 
     private fun scaleBitmap(bitmap: Bitmap, maxEdge: Int): Bitmap {
         val w = bitmap.width
@@ -425,46 +386,15 @@ class TriageLoopViewModel(application: Application) : AndroidViewModel(applicati
         return stream.toByteArray()
     }
 
-    private fun buildWav(pcmData: ByteArray, sampleRate: Int): ByteArray {
-        val channels = 1
-        val bitsPerSample = 16
-        val byteRate = sampleRate * channels * bitsPerSample / 8
-        val blockAlign = channels * bitsPerSample / 8
-        val dataSize = pcmData.size
-        val fileSize = 36 + dataSize
-
-        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
-            put('R'.code.toByte()); put('I'.code.toByte())
-            put('F'.code.toByte()); put('F'.code.toByte())
-            putInt(fileSize)
-            put('W'.code.toByte()); put('A'.code.toByte())
-            put('V'.code.toByte()); put('E'.code.toByte())
-            put('f'.code.toByte()); put('m'.code.toByte())
-            put('t'.code.toByte()); put(' '.code.toByte())
-            putInt(16)
-            putShort(1)
-            putShort(channels.toShort())
-            putInt(sampleRate)
-            putInt(byteRate)
-            putShort(blockAlign.toShort())
-            putShort(bitsPerSample.toShort())
-            put('d'.code.toByte()); put('a'.code.toByte())
-            put('t'.code.toByte()); put('a'.code.toByte())
-            putInt(dataSize)
-        }
-
-        return header.array() + pcmData
-    }
-
     // --- Cleanup ---
 
     override fun onCleared() {
         super.onCleared()
-        isRecording = false
-        audioJob?.cancel()
         turnJob?.cancel()
-        try { audioRecord?.stop() } catch (_: Exception) {}
-        try { audioRecord?.release() } catch (_: Exception) {}
+        Handler(Looper.getMainLooper()).post {
+            speechRecognizer?.cancel()
+            speechRecognizer?.destroy()
+        }
         ttsManager.shutdown()
         frameGate.close()
         try { conversation?.close() } catch (_: Exception) {}

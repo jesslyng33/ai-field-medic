@@ -88,6 +88,7 @@ fun TriageLoopScreen(
     val view = LocalView.current
 
     val currentPrompt by viewModel.currentPrompt.collectAsState()
+    val userTranscript by viewModel.userTranscript.collectAsState()
     val vlmDescription by viewModel.vlmDescription.collectAsState()
     val isMuted by viewModel.isMuted.collectAsState()
     val isFlashOn by viewModel.isFlashOn.collectAsState()
@@ -327,6 +328,26 @@ fun TriageLoopScreen(
                     textAlign = TextAlign.Center,
                     lineHeight = 30.sp,
                 )
+            }
+
+            // Transcript caption — shows what the user said
+            if (userTranscript.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "\"$userTranscript\"",
+                        color = FMText.copy(alpha = 0.65f),
+                        fontSize = 14.sp,
+                        fontFamily = appFontFamily,
+                        textAlign = TextAlign.Center,
+                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                    )
+                }
             }
 
             Spacer(Modifier.height(16.dp))
