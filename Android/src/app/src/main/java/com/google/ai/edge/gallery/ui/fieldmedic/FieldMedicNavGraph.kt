@@ -31,6 +31,8 @@ import com.google.ai.edge.gallery.ui.fieldmedic.settings.ConditionsEditScreen
 import com.google.ai.edge.gallery.ui.fieldmedic.settings.ContactEditScreen
 import com.google.ai.edge.gallery.ui.fieldmedic.settings.MedicationsEditScreen
 import com.google.ai.edge.gallery.ui.fieldmedic.settings.SettingsScreen
+import com.google.ai.edge.gallery.ui.fieldmedic.settings.VitalsEditScreen
+import com.google.ai.edge.gallery.ui.fieldmedic.ProfileScreen
 
 private const val ROUTE_ONBOARDING_GRAPH = "fm_onboarding_graph"
 private const val ROUTE_ONBOARDING_WELCOME = "fm_onboarding_welcome"
@@ -50,6 +52,8 @@ private const val ROUTE_SETTINGS_ALLERGIES = "fm_settings_allergies"
 private const val ROUTE_SETTINGS_CONDITIONS = "fm_settings_conditions"
 private const val ROUTE_SETTINGS_MEDICATIONS = "fm_settings_medications"
 private const val ROUTE_SETTINGS_CONTACT = "fm_settings_contact"
+private const val ROUTE_SETTINGS_VITALS = "fm_settings_vitals"
+private const val ROUTE_PROFILE = "fm_profile"
 
 private const val ROUTE_ASSESSMENT = "fm_assessment"
 private const val ROUTE_THINKING = "fm_thinking"
@@ -198,6 +202,8 @@ fun FieldMedicNavHost(navController: NavHostController) {
                             popUpTo(ROUTE_HOME) { inclusive = false }
                         }
                     },
+                    onViewProfile = { navController.navigate(ROUTE_PROFILE) },
+                    onEditVitals = { navController.navigate(ROUTE_SETTINGS_VITALS) },
                     onEditAllergies = { navController.navigate(ROUTE_SETTINGS_ALLERGIES) },
                     onEditConditions = { navController.navigate(ROUTE_SETTINGS_CONDITIONS) },
                     onEditMedications = { navController.navigate(ROUTE_SETTINGS_MEDICATIONS) },
@@ -215,6 +221,12 @@ fun FieldMedicNavHost(navController: NavHostController) {
             }
             composable(ROUTE_SETTINGS_CONTACT) {
                 ContactEditScreen(onBack = { navController.navigateUp() })
+            }
+            composable(ROUTE_SETTINGS_VITALS) {
+                VitalsEditScreen(onBack = { navController.navigateUp() })
+            }
+            composable(ROUTE_PROFILE) {
+                ProfileScreen(onBack = { navController.navigateUp() })
             }
 
             composable(ROUTE_ASSESSMENT) {

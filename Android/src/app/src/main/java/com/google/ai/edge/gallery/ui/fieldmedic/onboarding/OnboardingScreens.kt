@@ -1129,10 +1129,11 @@ private fun AllergyDialog(
 ) {
     var allergen by remember { mutableStateOf("") }
     var severity by remember { mutableStateOf("moderate") }
-    var customReaction by remember { mutableStateOf("") }
+    var reactionQuery by remember { mutableStateOf("") }
     var selectedReaction by remember { mutableStateOf("") }
     var showSeverityInfo by remember { mutableStateOf(false) }
     var showReactionInfo by remember { mutableStateOf(false) }
+    var reactionDropdownExpanded by remember { mutableStateOf(false) }
 
     val severityDescriptions = mapOf(
         "mild" to "Minor, localized reactions (runny nose, mild rash). No danger signs.",
@@ -1145,12 +1146,18 @@ private fun AllergyDialog(
         "Rash" to "Localized red, irritated skin.",
         "Hives" to "Raised, itchy welts anywhere on the body.",
         "Swelling" to "Swelling of face, lips, tongue, or throat (angioedema).",
-        "Breathing" to "Wheezing, shortness of breath, or chest tightness.",
-        "GI" to "Nausea, vomiting, diarrhea, or stomach cramps.",
-        "Other" to "Describe your specific reaction below.",
+        "Breathing difficulty" to "Wheezing, shortness of breath, or chest tightness.",
+        "GI symptoms" to "Nausea, vomiting, diarrhea, or stomach cramps.",
+        "Itching" to "Generalized or localized itching without visible rash.",
+        "Flushing" to "Sudden redness and warmth of the skin.",
+        "Dizziness" to "Lightheadedness or feeling faint.",
+        "Throat tightening" to "Sensation of the throat closing (laryngeal edema).",
     )
-    val reactions = listOf("Anaphylaxis", "Rash", "Hives", "Swelling", "Breathing", "GI", "Other")
-    val effectiveReaction = if (selectedReaction == "Other") customReaction.trim() else selectedReaction
+    val reactionSuggestions = listOf(
+        "Anaphylaxis", "Rash", "Hives", "Swelling", "Breathing difficulty",
+        "GI symptoms", "Itching", "Flushing", "Dizziness", "Throat tightening",
+    )
+    val effectiveReaction = selectedReaction.ifBlank { reactionQuery.trim() }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1200,29 +1207,96 @@ private fun AllergyDialog(
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                Column(
-                    modifier = Modifier.heightIn(max = 180.dp).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    reactions.chunked(3).forEach { rowItems ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            rowItems.forEach { r ->
-                                ChoiceChip(r, selectedReaction == r, { selectedReaction = r }, Modifier.weight(1f))
-                            }
-                            // Pad row if fewer than 3 items
-                            repeat(3 - rowItems.size) {
-                                Spacer(Modifier.weight(1f))
-                            }
+                // Reaction text field with autofill dropdown
+                Box {
+                    FMTextField(
+                        value = reactionQuery,
+                        onValueChange = { query ->
+                            reactionQuery = query
+                            selectedReaction = ""
+                            reactionDropdownExpanded = query.isNotBlank()
+                        },
+                        placeholder = "Type a reaction...",
+                    )
+                    DropdownMenu(
+                        expanded = reactionDropdownExpanded,
+                        onDismissRequest = { reactionDropdownExpanded = false },
+                        modifier = Modifier
+                            .background(FMSurface)
+                            .border(1.dp, FMBorder, RoundedCornerShape(8.dp)),
+                    ) {
+                        val query = reactionQuery.trim()
+                        val filtered = reactionSuggestions.filter {
+                            it.contains(query, ignoreCase = true)
+                        }
+                        filtered.forEach { suggestion ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        suggestion,
+                                        color = FMText,
+                                        fontSize = 14.sp,
+                                        fontFamily = appFontFamily,
+                                    )
+                                },
+                                onClick = {
+                                    selectedReaction = suggestion
+                                    reactionQuery = suggestion
+                                    reactionDropdownExpanded = false
+                                },
+                            )
+                        }
+                        // "Add [typed text]" option if not already in list
+                        if (query.isNotBlank() && filtered.none { it.equals(query, ignoreCase = true) }) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "Add \"$query\"",
+                                        color = FMRedBright,
+                                        fontSize = 14.sp,
+                                        fontFamily = appFontFamily,
+                                    )
+                                },
+                                onClick = {
+                                    selectedReaction = query
+                                    reactionQuery = query
+                                    reactionDropdownExpanded = false
+                                },
+                            )
                         }
                     }
                 }
-                if (selectedReaction == "Other") {
-                    Spacer(Modifier.height(10.dp))
-                    FMTextField(
-                        value = customReaction,
-                        onValueChange = { customReaction = it },
-                        placeholder = "Describe your reaction...",
-                    )
+                // Selected reaction chip tag
+                if (selectedReaction.isNotBlank()) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(FMRed.copy(alpha = 0.15f))
+                            .border(1.dp, FMRed.copy(alpha = 0.5f), RoundedCornerShape(20.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            selectedReaction,
+                            color = FMRedBright,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFamily = appFontFamily,
+                        )
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Clear reaction",
+                            tint = FMRedBright,
+                            modifier = Modifier
+                                .size(14.dp)
+                                .clickable {
+                                    selectedReaction = ""
+                                    reactionQuery = ""
+                                },
+                        )
+                    }
                 }
             }
         },
@@ -1293,7 +1367,7 @@ private fun AllergyDialog(
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 fontFamily = appFontFamily,
-                                modifier = Modifier.width(90.dp),
+                                modifier = Modifier.width(130.dp),
                             )
                             Text(desc, color = FMTextSub, fontSize = 12.sp, fontFamily = appFontFamily, lineHeight = 17.sp)
                         }
